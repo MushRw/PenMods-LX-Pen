@@ -215,6 +215,13 @@ public:
 
     /* 供 onSoundEnd hook 调用：通知 UI + 自动连播 */
     void handleSongEnded() {
+        /* 手动停止（切歌/停止）时宿主也会发 onSoundEnd，但此时非 PLAYING，忽略以免误触发连播 */
+        void* mpm = resolveTInstance(kYMediaPlayerManagerT);
+        if (mpm && g_hook_api && g_hook_api->querySymbol) {
+            typedef int (*PlayStateFn)(void*);
+            PlayStateFn getState = (PlayStateFn)g_hook_api->querySymbol("_ZNK19YMediaPlayerManager9playStateEv");
+            if (getState && getState(mpm) != 0) return;
+        }
         emit songEnded();
         if (m_autoNext && m_queue.size() > 0) {
             int next = m_index + 1;
@@ -349,6 +356,15 @@ private:
             fprintf(stderr, "[lxpen] host symbols missing\n");
             return false;
         }
+
+        /* 强制停止当前播放，确保宿主能加载并切换新媒体（播放中直接 playAudio 不会换流） */
+        SetPlayStateFn setState = (SetPlayStateFn)g_hook_api->querySymbol(kSetPlayState);
+        if (setState) {
+            int32_t stopped = 2; /* PlayState::STOPPED */
+            setState(mpm, &stopped);
+        }
+        VoidFn pause = (VoidFn)g_hook_api->querySymbol(kOnClickedPause);
+        if (pause) pause(mpm);
 
         char mem[sizeof(YColumnMediaEntity)];
         std::memset(mem, 0, sizeof mem);
