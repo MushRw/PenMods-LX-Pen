@@ -275,7 +275,8 @@ Rectangle {
         readOffset = 0
         pendingOut = ""
         // 后台播放：若已有 runner 在跑（关页面不杀），直接重连，从输出文件尾部开始读
-        var alive = shell.exec("pgrep -x penmusic >/dev/null 2>&1 && echo 1 || echo 0").trim()
+        // 注意：busybox pgrep 不支持 -x，用普通 pgrep（按进程名匹配）
+        var alive = shell.exec("pgrep penmusic >/dev/null 2>&1 && echo 1 || echo 0").trim()
         if (alive === "1") {
             var sz = shell.exec("wc -c < '" + outFile + "' 2>/dev/null; true").trim()
             var n = parseInt(sz, 10)
