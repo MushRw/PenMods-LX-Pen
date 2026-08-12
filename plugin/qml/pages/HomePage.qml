@@ -120,7 +120,7 @@ Item {
             delegate: SongRow {
                 width: listView.width - 8
                 song: modelData
-                onClicked: root.playSong(modelData)
+                onClicked: root.playSong(modelData, index)
             }
 
             /* 搜索记录（无结果时显示，点击直接搜索） */

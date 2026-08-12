@@ -377,15 +377,24 @@ Rectangle {
         doSearch()
     }
 
-    function playSong(song) {
+    function playSong(song, idx) {
         if (!song) return
         currentSong = song
-        queueIndex = queue.indexOf(song)
+        // 列表点击传入 delegate 的 index（modelData 与 queue 元素引用不一致，indexOf 不可靠）
+        if (idx !== undefined && idx >= 0 && idx < queue.length) queueIndex = idx
+        else queueIndex = queue.indexOf(song)
+        shell.exec("echo 'playSong type=" + (typeof lxpenPlayer) + " idx=" + queueIndex +
+                   " has=" + (lxpenPlayer && typeof lxpenPlayer.playIndex) + "' >> /tmp/lxpen_touch.log")
         // 播放/队列/连播全部交给 SO（lxpenPlayer），它不随本页面销毁，回主页后仍能自动连播
         if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setQueue && lxpenPlayer.playIndex) {
-            lxpenPlayer.setQueue(queue, queueIndex, autoNext)
-            lxpenPlayer.setQuality(quality)
-            lxpenPlayer.playIndex(queueIndex)
+            try {
+                lxpenPlayer.setQueue(queue, queueIndex, autoNext)
+                lxpenPlayer.setQuality(quality)
+                lxpenPlayer.playIndex(queueIndex)
+            } catch (e) {
+                shell.exec("echo 'playExc " + e + "' >> /tmp/lxpen_touch.log")
+                toast.show("播放调用失败", 3000)
+            }
         } else {
             toast.show("播放组件不可用", 3000)
         }
@@ -395,14 +404,14 @@ Rectangle {
         if (queue.length === 0) return
         var idx = queueIndex + 1
         if (idx >= queue.length) idx = 0
-        playSong(queue[idx])
+        playSong(queue[idx], idx)
     }
 
     function playPrev() {
         if (queue.length === 0) return
         var idx = queueIndex - 1
         if (idx < 0) idx = queue.length - 1
-        playSong(queue[idx])
+        playSong(queue[idx], idx)
     }
 
     function togglePlay() {

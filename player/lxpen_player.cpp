@@ -163,10 +163,14 @@ public:
         /* 3. 在线直连；失败则下载兜底 */
         if (doPlay(url, title, lrcPath, true)) {
             soLog("online play started");
-            emit songStarted(m_index);
-            return;
+            if (waitForPlaying(5000)) {
+                soLog("host entered PLAYING (online works)");
+                emit songStarted(m_index);
+                return;
+            }
+            soLog("host did NOT enter PLAYING, fallback download");
         }
-        soLog("online play failed, fallback download");
+        soLog("fallback download for " + url.left(60));
         const QString safeId = QString::fromLatin1(QCryptographicHash::hash(
             song.value(QStringLiteral("songmid")).toString().toUtf8(), QCryptographicHash::Md5).toHex());
         const QString path = QStringLiteral("/tmp/lxpen_%1.mp3").arg(safeId);
@@ -279,11 +283,27 @@ private:
     }
 
     void soLog(const QString& msg) {
-        FILE* f = ::fopen("/tmp/lxpen_so.log", "a");
-        if (f) {
-            ::fprintf(f, "[lxpen] %s\n", msg.toUtf8().constData());
-            ::fclose(f);
+        QFile f(QStringLiteral("/tmp/lxpen_so.log"));
+        if (f.open(QIODevice::Append | QIODevice::WriteOnly)) {
+            f.write(("[lxpen] " + msg + "\n").toUtf8());
+            f.close();
         }
+    }
+
+    /* 轮询宿主播放状态，直到进入 PLAYING（PlayState::PLAYING == 0）或超时 */
+    bool waitForPlaying(int timeoutMs) {
+        void* mpm = resolveTInstance(kYMediaPlayerManagerT);
+        if (!mpm || !g_hook_api || !g_hook_api->querySymbol) return false;
+        typedef int (*PlayStateFn)(void*);
+        PlayStateFn getState = (PlayStateFn)g_hook_api->querySymbol("_ZNK19YMediaPlayerManager9playStateEv");
+        if (!getState) return false;
+        int waited = 0;
+        while (waited < timeoutMs) {
+            if (getState(mpm) == 0) return true; /* PLAYING */
+            QThread::msleep(100);
+            waited += 100;
+        }
+        return false;
     }
 
     bool doPlay(const QString& src, const QString& title, const QString& lrcPath, bool isUrl) {
