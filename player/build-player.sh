@@ -22,7 +22,7 @@ fi
     -I"$QTDIR/include/QtCore" \
     -I"$QTDIR/include/QtQml" \
     -I"$QTDIR/include/QtGui" \
-    "$DIR/lxpen_player.cpp" "$DIR/moc_lxpen_player.cpp" \
+    "$DIR/lxpen_player.cpp" \
     -L"$QTDIR/lib" \
     -lQt5Core -lQt5Qml -lQt5Gui -lQt5Network \
     -o "$DIR/../plugin/liblxpen_player.so"
