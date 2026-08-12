@@ -271,9 +271,11 @@ Rectangle {
     function startFreshRunner() {
         // 全新启动（先确保无残留 runner）；注意 busybox pkill/pgrep 不支持 -x，
         // 且不能用 -f（会匹配到执行命令的 shell 自身导致自杀），用普通 pkill 按进程名匹配
+        // 词典笔缺 gconv 模块，先铺 GB18030 到 /tmp/gconv 并设 GCONV_PATH（否则 kw 歌词 iconv 失败）
+        shell.exec("mkdir -p /tmp/gconv; cp -f '" + pluginDir + "/gconv/GB18030.so' '" + pluginDir + "/gconv/GBK.so' '" + pluginDir + "/gconv/gconv-modules' /tmp/gconv/ 2>/dev/null; true")
         shell.exec("pkill -9 penmusic 2>/dev/null; sleep 1; rm -f " + inFifo + " " + outFile + " " + mpvSock + "; mkfifo " + inFifo + "; touch " + outFile + "; true")
         var script = String(selectedScript).replace(/[^A-Za-z0-9_.-]/g, "")
-        var cmd = "nohup " + pluginDir + "/bin/penmusic --script '" + pluginDir + "/scripts/" + script +
+        var cmd = "GCONV_PATH=/tmp/gconv nohup " + pluginDir + "/bin/penmusic --script '" + pluginDir + "/scripts/" + script +
                   "' --js-dir '" + pluginDir + "/js' --in " + inFifo + " --out " + outFile +
                   " > /tmp/lxpen.log 2>&1 &"
         shell.startDetached(cmd)
