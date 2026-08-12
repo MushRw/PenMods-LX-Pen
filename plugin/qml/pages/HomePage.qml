@@ -55,7 +55,10 @@ Item {
 
             MouseArea {
                 anchors.fill: parent
-                onClicked: root.keyboard.open(root.keyword)
+                onClicked: {
+                    root.touchDebug("searchbox")
+                    root.keyboard.open(root.keyword)
+                }
             }
         }
 
