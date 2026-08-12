@@ -6,10 +6,12 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 QTDIR="${QTDIR:-$DIR/../.qt-aarch64}"
 CC="${CC:-aarch64-linux-gnu-g++}"
-MOC="$QTDIR/bin/moc"
+# moc 是代码生成器，与目标架构无关：优先用宿主 moc（CI 装 qt5-tools），
+# 也可用 QTDIR/bin/moc（若 Qt 包自带）。
+MOC="${MOC:-moc}"
 
-if [ ! -x "$MOC" ]; then
-    echo "moc not found at $MOC (set QTDIR to the aarch64 Qt 5.15.2 root)" >&2
+if ! command -v "$MOC" >/dev/null 2>&1; then
+    echo "moc not found at $MOC (install qt5-tools or set MOC)" >&2
     exit 1
 fi
 

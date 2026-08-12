@@ -23,7 +23,7 @@ jobs:
       - name: 安装依赖
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git wget zip python nodejs
+          pacman -S --noconfirm base-devel git wget zip python nodejs qt5-tools
 
       - name: 安装 aarch64 工具链（glibc 2.27，与词典笔一致）
         run: |
