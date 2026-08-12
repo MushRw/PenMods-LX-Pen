@@ -134,14 +134,14 @@ Item {
 
         Column {
             anchors.fill: parent
-            anchors.topMargin: 6
-            anchors.bottomMargin: 6
-            spacing: 4
+            anchors.topMargin: 4
+            anchors.bottomMargin: 4
+            spacing: 2
 
             Repeater {
                 model: [ { t: "热搜", toast: "热搜功能开发中" }, { t: "榜单", toast: "榜单功能开发中" }, { t: "歌单", toast: "歌单功能开发中" } ]
                 Rectangle {
-                    width: 48; height: 30
+                    width: 48; height: 26
                     anchors.horizontalCenter: parent.horizontalCenter
                     radius: Theme.radiusSmall
                     color: area.pressed ? Theme.cardHi : Theme.card
@@ -156,15 +156,16 @@ Item {
                     MouseArea {
                         id: area
                         anchors.fill: parent
-                        onClicked: root.toast.show(modelData.toast, 2000)
+                        onClicked: {
+                            root.touchDebug("placeholder")
+                            root.toast.show(modelData.toast, 2000)
+                        }
                     }
                 }
             }
 
-            Item { width: 1; height: 1 }
-
             Rectangle {
-                width: 48; height: 30
+                width: 48; height: 26
                 anchors.horizontalCenter: parent.horizontalCenter
                 radius: Theme.radiusSmall
                 color: setArea.pressed ? Theme.accentPressed : Theme.accent
@@ -179,7 +180,33 @@ Item {
                 MouseArea {
                     id: setArea
                     anchors.fill: parent
-                    onClicked: root.page = "settings"
+                    onClicked: {
+                        root.touchDebug("settings")
+                        root.page = "settings"
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 48; height: 26
+                anchors.horizontalCenter: parent.horizontalCenter
+                radius: Theme.radiusSmall
+                color: exitArea.pressed ? Theme.cardHi : Theme.card
+                border.color: Theme.line
+                border.width: 1
+                Text {
+                    anchors.centerIn: parent
+                    text: "退出"
+                    color: Theme.textSub
+                    font.pixelSize: Theme.pxSmall
+                }
+                MouseArea {
+                    id: exitArea
+                    anchors.fill: parent
+                    onClicked: {
+                        root.touchDebug("exit")
+                        root.backButtonClicked()
+                    }
                 }
             }
         }

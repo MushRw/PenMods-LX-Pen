@@ -4,17 +4,18 @@ import "pages"
 import "components"
 import "."
 
-Item {
+Rectangle {
     id: root
     width: 320
     height: 170
+    color: Theme.bg
 
     signal backButtonClicked()
 
     /* ---------- 运行时常量 ---------- */
     readonly property string pluginDir: "/userdisk/PenMods/plugins/lx-pen"
     readonly property string inFifo:    "/tmp/lxpen_in"
-    readonly property string outFifo:   "/tmp/lxpen_out"
+    readonly property string outFile:   "/tmp/lxpen_out.log"
     readonly property string mpvSock:   "/tmp/lxpen.sock"
 
     /* ---------- 状态 ---------- */
@@ -46,6 +47,9 @@ Item {
     property var logLines: []
 
     property bool runnerStarting: false
+    property bool destroying: false
+    property int readOffset: 0
+    property string pendingOut: ""
 
     function srcName(s) {
         if (s === "kw") return "酷我"
@@ -140,7 +144,13 @@ Item {
         if (logLines.length > 30) logLines.shift()
     }
 
+    /* 临时调试：记录 UI 点击，便于远程确认触摸事件是否送达 */
+    function touchDebug(tag) {
+        shell.exec("echo '" + tag + "' >> /tmp/lxpen_touch.log")
+    }
+
     function rpcSend(cmdObj, cb, timeoutMs) {
+        if (destroying) return
         if (runnerStarting) {
             if (cb) cb({ ok: false, error: "starting" })
             return
@@ -160,7 +170,8 @@ Item {
         pending["" + id] = { cb: cb, timer: timer }
         timer.start()
         var b64 = b64Encode(JSON.stringify(cmdObj))
-        shell.execAsync("echo '" + b64 + "' | base64 -d; echo > " + inFifo, function() {})
+        // 同步写入（带 1s 超时，避免 runner 不在时阻塞 UI），base64 解码后的 JSON 与结尾换行都写入 FIFO
+        shell.exec("timeout 1 sh -c \"echo '" + b64 + "' | base64 -d > " + inFifo + "; echo > " + inFifo + "\"")
     }
 
     function onLine(line) {
@@ -194,14 +205,34 @@ Item {
         }
     }
 
-    function readLoop() {
-        shell.execAsync("cat " + outFifo, function(res) {
-            if (res && res.stdout) {
-                var lines = res.stdout.split("\n")
-                for (var i = 0; i < lines.length; i++) onLine(lines[i])
-            }
-            if (root.visible) readLoop()
-        })
+    function byteLen(s) {
+        if (!s) return 0
+        var esc = encodeURIComponent(s)
+        var pct = 0
+        for (var i = 0; i < esc.length; i++) {
+            if (esc.charAt(i) === "%") pct++
+        }
+        return esc.length - pct * 2
+    }
+
+    /* 轮询 runner 输出文件（不用长驻 cat 进程，避免宿主 execAsync 超时强杀导致闪退） */
+    function pollOut() {
+        if (destroying || !root.visible) return
+        // shell.exec 会 trim 掉末尾换行，用 ENDMARK 哨兵保住"最后一行是否完整"的信息
+        var out = shell.exec("tail -c +" + (readOffset + 1) + " '" + outFile + "' 2>/dev/null; echo ENDMARK")
+        if (!out) return
+        var idx = out.lastIndexOf("\nENDMARK")
+        if (idx < 0) return
+        var data = out.substring(0, idx)
+        if (data.length === 0) return
+        readOffset += byteLen(data)
+        if (pendingOut.length > 0) {
+            data = pendingOut + data
+            pendingOut = ""
+        }
+        var lines = data.split("\n")
+        pendingOut = lines.pop()
+        for (var i = 0; i < lines.length; i++) onLine(lines[i])
     }
 
     function applyStatus(st) {
@@ -226,19 +257,21 @@ Item {
         if (runnerStarting) return
         runnerStarting = true
         scriptReady = false
-        shell.exec("rm -f " + inFifo + " " + outFifo + " " + mpvSock + "; mkfifo " + inFifo + " " + outFifo + "; true")
+        readOffset = 0
+        pendingOut = ""
+        shell.exec("rm -f " + inFifo + " " + outFile + " " + mpvSock + "; mkfifo " + inFifo + "; touch " + outFile + "; true")
         var script = String(selectedScript).replace(/[^A-Za-z0-9_.-]/g, "")
         var cmd = "nohup " + pluginDir + "/bin/penmusic --script '" + pluginDir + "/scripts/" + script +
-                  "' --js-dir '" + pluginDir + "/js' --in " + inFifo + " --out " + outFifo +
+                  "' --js-dir '" + pluginDir + "/js' --in " + inFifo + " --out " + outFile +
                   " --mpv " + mpvSock + " --mpv-bin '" + mpvPath + "' > /tmp/lxpen.log 2>&1 &"
         shell.startDetached(cmd)
-        readLoop()
+        pollTimer.start()
         watchdog.restart()
         runnerStarting = false
     }
 
     function stopRunner() {
-        rpcSend({ cmd: "quit" }, null, 2000)
+        if (!destroying) rpcSend({ cmd: "quit" }, null, 2000)
         shell.exec("pkill -f penmusic 2>/dev/null; true")
         scriptReady = false
     }
@@ -441,6 +474,13 @@ Item {
         onTriggered: pingRunner()
     }
 
+    Timer {
+        id: pollTimer
+        interval: 400
+        repeat: true
+        onTriggered: root.pollOut()
+    }
+
     Component.onCompleted: {
         loadSettings()
         scanScripts()
@@ -448,6 +488,8 @@ Item {
     }
 
     Component.onDestruction: {
-        stopRunner()
+        destroying = true
+        pollTimer.stop()
+        shell.exec("pkill -f penmusic 2>/dev/null; true")
     }
 }

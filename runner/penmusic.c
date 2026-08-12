@@ -1283,6 +1283,7 @@ static double g_mpv_duration = -1;
 static int g_mpv_pause = -1;
 static int g_mpv_pending = 0;
 static int g_mpv_end_event = 0;
+static const char *g_mpv_last_state = NULL;
 
 static void mpv_spawn(void) {
     if (!g_mpv_bin || !g_mpv_sock) return;
@@ -1463,7 +1464,14 @@ static void mpv_handle_line(const char *line) {
             const char *state = "idle";
             if (g_mpv_pause == 0) state = "playing";
             else if (g_mpv_pause == 1 && g_mpv_time >= 0) state = "paused";
-            mpv_emit_status(state);
+            /* 空闲/暂停时状态不变就不重复上报，避免输出文件无限膨胀；播放中进度变化仍逐秒上报 */
+            int emit = 0;
+            if (!g_mpv_last_state || strcmp(g_mpv_last_state, state) != 0) emit = 1;
+            else if (strcmp(state, "playing") == 0 && g_mpv_time >= 0) emit = 1;
+            if (emit) {
+                g_mpv_last_state = state;
+                mpv_emit_status(state);
+            }
         }
         JS_FreeValue(g_ctx, data);
     }
