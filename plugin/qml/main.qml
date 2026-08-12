@@ -50,6 +50,7 @@ Rectangle {
     property bool destroying: false
     property int readOffset: 0
     property string pendingOut: ""
+    property int pingFail: 0
 
     function srcName(s) {
         if (s === "kw") return "酷我"
@@ -219,12 +220,19 @@ Rectangle {
     /* 轮询 runner 输出文件（不用长驻 cat 进程，避免宿主 execAsync 超时强杀导致闪退） */
     function pollOut() {
         if (destroying || !root.visible) return
-        // shell.exec 会 trim 掉末尾换行，用 ENDMARK 哨兵保住"最后一行是否完整"的信息
-        var out = shell.exec("tail -c +" + (readOffset + 1) + " '" + outFile + "' 2>/dev/null; echo ENDMARK")
-        if (!out) return
-        var idx = out.lastIndexOf("\nENDMARK")
-        if (idx < 0) return
-        var data = out.substring(0, idx)
+        // 用 execWithResult 拿未 trim 的原始 stdout，保证末尾换行与字节偏移精确（shell.exec 会 trim，导致最后一行被误判为半行而错位）
+        var res = shell.execWithResult("tail -c +" + (readOffset + 1) + " '" + outFile + "' 2>/dev/null; true")
+        if (!res || !res.stdout) {
+            // 文件可能被 runner 重启重建：若文件大小小于偏移则重置
+            var sz = shell.exec("wc -c < '" + outFile + "' 2>/dev/null; true")
+            var n = parseInt(sz, 10)
+            if (!isNaN(n) && n < readOffset) {
+                readOffset = 0
+                pendingOut = ""
+            }
+            return
+        }
+        var data = res.stdout
         if (data.length === 0) return
         readOffset += byteLen(data)
         if (pendingOut.length > 0) {
@@ -260,7 +268,8 @@ Rectangle {
         scriptReady = false
         readOffset = 0
         pendingOut = ""
-        shell.exec("rm -f " + inFifo + " " + outFile + " " + mpvSock + "; mkfifo " + inFifo + "; touch " + outFile + "; true")
+        // 先确保只有一个 runner（app 被强杀时旧 runner 可能残留，导致双写损坏输出文件）
+        shell.exec("pkill -9 -f 'penmusic --script' 2>/dev/null; sleep 1; rm -f " + inFifo + " " + outFile + " " + mpvSock + "; mkfifo " + inFifo + "; touch " + outFile + "; true")
         var script = String(selectedScript).replace(/[^A-Za-z0-9_.-]/g, "")
         var cmd = "nohup " + pluginDir + "/bin/penmusic --script '" + pluginDir + "/scripts/" + script +
                   "' --js-dir '" + pluginDir + "/js' --in " + inFifo + " --out " + outFile +
@@ -285,7 +294,10 @@ Rectangle {
     function pingRunner() {
         if (!scriptReady && !scriptError) return
         rpcSend({ cmd: "ping" }, function(res) {
-            if (!res.ok) {
+            if (!res.ok) pingFail++
+            else pingFail = 0
+            if (pingFail >= 3) {
+                pingFail = 0
                 pushLog("warn", "runner 无响应，重启")
                 restartRunner()
             }

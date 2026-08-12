@@ -2438,7 +2438,14 @@ int main(int argc, char **argv) {
     if (strcmp(outpath, "-") == 0) {
         g_fd_out = 1;
     } else {
-        g_fd_out = open(outpath, O_RDWR | O_NONBLOCK);
+        /* 普通文件用 O_APPEND 追加写：即使存在残留 runner 双写也不会覆盖损坏；
+           FIFO 仍用 O_RDWR|O_NONBLOCK 避免无读者时打开阻塞 */
+        struct stat st_out;
+        if (stat(outpath, &st_out) == 0 && S_ISFIFO(st_out.st_mode)) {
+            g_fd_out = open(outpath, O_RDWR | O_NONBLOCK);
+        } else {
+            g_fd_out = open(outpath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        }
         if (g_fd_out < 0) { fprintf(stderr, "[penmusic] cannot open out fifo %s\n", outpath); return 2; }
     }
 #endif
