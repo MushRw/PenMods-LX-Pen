@@ -5,6 +5,7 @@ runner/penmusic-win*.exe
 runner/build_err*.txt
 runner/*.o
 lx-pen.zip
+.release_new/
 
 # 系统 / 编辑器
 .DS_Store
