@@ -162,17 +162,8 @@ public:
         }
         soLog("lrc path: " + lrcPath);
 
-        /* 3. 在线直连；失败则下载兜底 */
-        if (doPlay(url, title, lrcPath, true)) {
-            soLog("online play started");
-            if (waitForPlaying(5000)) {
-                soLog("host entered PLAYING (online works)");
-                emit songStarted(m_index);
-                return;
-            }
-            soLog("host did NOT enter PLAYING, fallback download");
-        }
-        soLog("fallback download for " + url.left(60));
+        /* 3. 主路径：下载到本地文件再播放（宿主对本地文件的 playAudio 切歌可靠；
+              在线直连 mUrl 首次可播，但切歌不换流，仅作下载失败后备） */
         const QString safeId = QString::fromLatin1(QCryptographicHash::hash(
             song.value(QStringLiteral("songmid")).toString().toUtf8(), QCryptographicHash::Md5).toHex());
         const QString path = QStringLiteral("/tmp/lxpen_%1.mp3").arg(safeId);
@@ -181,14 +172,20 @@ public:
         dcmd.insert(QStringLiteral("url"), url);
         dcmd.insert(QStringLiteral("path"), path);
         const QJsonObject dresp = rpc(dcmd, 30000);
-        if (!dresp.value(QStringLiteral("ok")).toBool()) {
-            soLog("download failed: " + dresp.value(QStringLiteral("error")).toString());
-            emit playError(QStringLiteral("下载播放失败: ") + dresp.value(QStringLiteral("error")).toString());
+        if (dresp.value(QStringLiteral("ok")).toBool()) {
+            doPlay(path, title, lrcPath, false);
+            soLog("file play started: " + path);
+            emit songStarted(m_index);
             return;
         }
-        doPlay(path, title, lrcPath, false);
-        soLog("file play started");
-        emit songStarted(m_index);
+        soLog("download failed, try online: " + dresp.value(QStringLiteral("error")).toString());
+        if (doPlay(url, title, lrcPath, true)) {
+            waitForPlaying(5000);
+            soLog("online fallback attempted");
+            emit songStarted(m_index);
+            return;
+        }
+        emit playError(QStringLiteral("播放失败: ") + dresp.value(QStringLiteral("error")).toString());
     }
 
     Q_INVOKABLE bool playUrl(const QString& url, const QString& title, const QString& lrcPath = QString()) {
