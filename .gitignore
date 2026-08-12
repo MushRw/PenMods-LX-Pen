@@ -1,0 +1,16 @@
+# 构建产物（CI / 本地生成，不入库）
+lx-music-port/dist/
+plugin/bin/penmusic
+runner/penmusic-win*.exe
+runner/build_err*.txt
+runner/*.o
+lx-pen.zip
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
+
+# 临时探针
+tests/probe*.js

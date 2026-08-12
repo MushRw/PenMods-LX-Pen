@@ -1,0 +1,187 @@
+import QtQuick 2.12
+import ".."
+import "../components"
+
+/* 首页：平台切换 + 搜索 + 结果列表；右侧竖排入口（热搜/榜单/歌单占位 + 设置） */
+Item {
+    id: homePage
+    anchors.fill: parent
+
+    /* 左侧主区 */
+    Item {
+        anchors.left: parent.left
+        anchors.right: sidebar.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+
+        /* 标题行 */
+        Text {
+            anchors.left: parent.left; anchors.leftMargin: 8
+            anchors.top: parent.top; anchors.topMargin: 4
+            text: "LX Pen"
+            color: Theme.text
+            font.pixelSize: Theme.pxTitle
+            font.bold: true
+        }
+        Text {
+            anchors.left: parent.left; anchors.leftMargin: 70
+            anchors.top: parent.top; anchors.topMargin: 7
+            text: root.scriptReady ? "音源就绪" : (root.scriptError !== "" ? "音源异常" : "启动中...")
+            color: root.scriptReady ? Theme.success : (root.scriptError !== "" ? Theme.danger : Theme.textSub)
+            font.pixelSize: Theme.pxTiny
+        }
+
+        /* 搜索框 */
+        Rectangle {
+            id: searchBox
+            anchors.left: parent.left; anchors.leftMargin: 8
+            anchors.right: parent.right; anchors.rightMargin: 8
+            anchors.top: parent.top; anchors.topMargin: 27
+            height: 28
+            radius: Theme.radiusSmall
+            color: Theme.card
+            border.color: Theme.line
+            border.width: 1
+
+            Text {
+                anchors.left: parent.left; anchors.leftMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.keyword === "" ? "搜索歌曲..." : root.keyword
+                color: root.keyword === "" ? Theme.textSub : Theme.text
+                font.pixelSize: Theme.pxNormal
+                elide: Text.ElideRight
+                width: parent.width - 40
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                onClicked: root.keyboard.open(root.keyword)
+            }
+        }
+
+        /* 平台 chips */
+        Row {
+            id: chips
+            anchors.left: parent.left; anchors.leftMargin: 8
+            anchors.top: searchBox.bottom; anchors.topMargin: 5
+            spacing: 5
+
+            Repeater {
+                model: [ { k: "kw", n: "酷我" }, { k: "kg", n: "酷狗" }, { k: "mg", n: "咪咕" }, { k: "wy", n: "网易" }, { k: "tx", n: "QQ" } ]
+                Rectangle {
+                    width: 46
+                    height: 22
+                    radius: 11
+                    color: root.platform === modelData.k ? Theme.accent : Theme.card
+                    border.color: Theme.line
+                    border.width: 1
+                    Text {
+                        anchors.centerIn: parent
+                        text: modelData.n
+                        color: root.platform === modelData.k ? "#FFFFFF" : Theme.textSub
+                        font.pixelSize: Theme.pxTiny
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: {
+                            if (root.platform !== modelData.k) {
+                                root.platform = modelData.k
+                                root.saveSettings()
+                                root.doSearch()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        /* 结果列表 */
+        ListView {
+            id: listView
+            anchors.left: parent.left; anchors.leftMargin: 4
+            anchors.right: parent.right; anchors.rightMargin: 4
+            anchors.top: chips.bottom; anchors.topMargin: 4
+            anchors.bottom: parent.bottom
+            clip: true
+            model: root.searchResult
+            spacing: 2
+            boundsBehavior: Flickable.StopAtBounds
+
+            delegate: SongRow {
+                width: listView.width - 8
+                song: modelData
+                onClicked: root.playSong(modelData)
+            }
+
+            Text {
+                anchors.centerIn: parent
+                visible: root.searchResult.length === 0
+                text: root.searching ? "搜索中..." : "输入关键词搜索"
+                color: Theme.textSub
+                font.pixelSize: Theme.pxNormal
+            }
+        }
+    }
+
+    /* 右侧竖排入口 */
+    Rectangle {
+        id: sidebar
+        width: Theme.sidebarWidth
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        color: "transparent"
+
+        Column {
+            anchors.fill: parent
+            anchors.topMargin: 6
+            anchors.bottomMargin: 6
+            spacing: 4
+
+            Repeater {
+                model: [ { t: "热搜", toast: "热搜功能开发中" }, { t: "榜单", toast: "榜单功能开发中" }, { t: "歌单", toast: "歌单功能开发中" } ]
+                Rectangle {
+                    width: 48; height: 30
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    radius: Theme.radiusSmall
+                    color: area.pressed ? Theme.cardHi : Theme.card
+                    border.color: Theme.line
+                    border.width: 1
+                    Text {
+                        anchors.centerIn: parent
+                        text: modelData.t
+                        color: Theme.textSub
+                        font.pixelSize: Theme.pxSmall
+                    }
+                    MouseArea {
+                        id: area
+                        anchors.fill: parent
+                        onClicked: root.toast.show(modelData.toast, 2000)
+                    }
+                }
+            }
+
+            Item { width: 1; height: 1 }
+
+            Rectangle {
+                width: 48; height: 30
+                anchors.horizontalCenter: parent.horizontalCenter
+                radius: Theme.radiusSmall
+                color: setArea.pressed ? Theme.accentPressed : Theme.accent
+                border.color: Theme.accentBorder
+                border.width: 1
+                Text {
+                    anchors.centerIn: parent
+                    text: "设置"
+                    color: "#FFFFFF"
+                    font.pixelSize: Theme.pxSmall
+                }
+                MouseArea {
+                    id: setArea
+                    anchors.fill: parent
+                    onClicked: root.page = "settings"
+                }
+            }
+        }
+    }
+}
