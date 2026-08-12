@@ -161,7 +161,7 @@ Item {
             MouseArea {
                 id: volArea
                 anchors.fill: parent
-                onClicked: root.toast.show("音量 " + Math.round(root.volume * 100) + "%", 1500)
+                onClicked: toast.show("音量 " + Math.round(root.volume * 100) + "%", 1500)
             }
         }
     }

@@ -123,7 +123,7 @@ Item {
                 }
                 MouseArea {
                     anchors.fill: parent
-                    onClicked: root.toast.show("一般无需修改", 1500)
+                    onClicked: toast.show("一般无需修改", 1500)
                 }
             }
 

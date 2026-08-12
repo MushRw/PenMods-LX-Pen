@@ -7,6 +7,13 @@ Item {
     id: homePage
     anchors.fill: parent
 
+    /* 临时诊断：记录未被其他控件消费的点击坐标 */
+    MouseArea {
+        anchors.fill: parent
+        z: -10
+        onClicked: root.touchDebug("bg:" + Math.round(mouse.x) + "," + Math.round(mouse.y))
+    }
+
     /* 左侧主区 */
     Item {
         anchors.left: parent.left
@@ -57,7 +64,7 @@ Item {
                 anchors.fill: parent
                 onClicked: {
                     root.touchDebug("searchbox")
-                    root.keyboard.open(root.keyword)
+                    keyboard.open(root.keyword)
                 }
             }
         }
@@ -161,7 +168,7 @@ Item {
                         anchors.fill: parent
                         onClicked: {
                             root.touchDebug("placeholder")
-                            root.toast.show(modelData.toast, 2000)
+                            toast.show(modelData.toast, 2000)
                         }
                     }
                 }

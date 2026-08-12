@@ -193,6 +193,7 @@ Rectangle {
             scriptReady = true
             scriptError = ""
             pushLog("info", "音源脚本就绪: " + Object.keys(scriptSources).join(","))
+            toast.show("音源就绪", 1500)
         } else if (msg.event === "initFailed") {
             scriptReady = false
             scriptError = msg.error || "脚本初始化失败"
