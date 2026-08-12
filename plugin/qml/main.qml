@@ -342,67 +342,14 @@ Rectangle {
         if (!song) return
         currentSong = song
         queueIndex = queue.indexOf(song)
-        // 播放交给宿主播放器（lxpenPlayer），LX Pen 停留在搜索页
-        var url = ""
-        var lrcPath = ""
-        var urlReady = false
-        var lyricDone = false
-        var played = false
-
-        function tryPlay() {
-            if (played || !urlReady) return
-            played = true
-            var title = song.name + " - " + song.singer
-            var ok = false
-            if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.playUrl) {
-                ok = lxpenPlayer.playUrl(url, title, lrcPath || "")
-            }
-            if (!ok) {
-                fallbackDownloadPlay(url, song, lrcPath)
-                return
-            }
-            // 8s 内宿主未进入播放（PlayState.PLAYING=0）→ 下载兜底
-            var checkTimer = Qt.createQmlObject("import QtQuick 2.12; Timer { interval: 8000; repeat: false }", root)
-            checkTimer.triggered.connect(function() {
-                checkTimer.destroy()
-                var st = -1
-                try { st = mediaPlayerManager ? mediaPlayerManager.playState : -1 } catch (e) {}
-                if (st !== 0) fallbackDownloadPlay(url, song, lrcPath)
-            })
-            checkTimer.start()
+        // 播放/队列/连播全部交给 SO（lxpenPlayer），它不随本页面销毁，回主页后仍能自动连播
+        if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setQueue && lxpenPlayer.playIndex) {
+            lxpenPlayer.setQueue(queue, queueIndex, autoNext)
+            lxpenPlayer.setQuality(quality)
+            lxpenPlayer.playIndex(queueIndex)
+        } else {
+            toast.show("播放组件不可用", 3000)
         }
-
-        rpcSend({ cmd: "script", source: song.source, action: "musicUrl", info: { type: quality, musicInfo: song } }, function(res) {
-            if (!res.ok) { toast.show(res.error, 3000); return }
-            url = res.data
-            urlReady = true
-            tryPlay()
-        })
-        rpcSend({ cmd: "lyric", source: song.source, info: song }, function(res) {
-            if (res.ok && res.data && res.data.path) lrcPath = res.data.path
-            lyricDone = true
-            tryPlay()
-        })
-        // 歌词最迟 2.5s 后不再等待，避免拖慢起播
-        var lyricWait = Qt.createQmlObject("import QtQuick 2.12; Timer { interval: 2500; repeat: false }", root)
-        lyricWait.triggered.connect(function() {
-            lyricWait.destroy()
-            lyricDone = true
-            tryPlay()
-        })
-        lyricWait.start()
-    }
-
-    function fallbackDownloadPlay(url, song, lrcPath) {
-        var safeId = String(song.songmid || song.hash || "x").replace(/[^A-Za-z0-9_-]/g, "")
-        var path = "/tmp/lxpen_" + safeId + ".mp3"
-        toast.show("在线直连失败，下载播放…", 1500)
-        rpcSend({ cmd: "download", url: url, path: path }, function(res) {
-            if (!res.ok) { toast.show("播放失败: " + res.error, 3000); return }
-            if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.playFile) {
-                lxpenPlayer.playFile(path, song.name + " - " + song.singer, lrcPath || "")
-            }
-        })
     }
 
     function playNext() {
@@ -541,7 +488,16 @@ Rectangle {
         target: (typeof lxpenPlayer !== "undefined") ? lxpenPlayer : null
         ignoreUnknownSignals: true
         function onSongEnded() {
-            if (root.autoNext && root.currentSong && root.queue.length > 0) root.playNext()
+            // 自动连播由 SO 处理（回主页后仍有效）；这里仅保持 UI 状态一致
+        }
+        function onSongStarted(idx) {
+            if (root.queue.length > 0 && idx >= 0 && idx < root.queue.length) {
+                root.currentSong = root.queue[idx]
+                root.queueIndex = idx
+            }
+        }
+        function onPlayError(msg) {
+            root.toast.show(msg, 3000)
         }
     }
 
@@ -549,6 +505,10 @@ Rectangle {
         loadSettings()
         scanScripts()
         startRunner()
+        // 把自动连播设置同步给常驻 SO（回主页后连播逻辑由 SO 承担）
+        if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setAutoNext) {
+            lxpenPlayer.setAutoNext(autoNext)
+        }
     }
 
     Component.onDestruction: {

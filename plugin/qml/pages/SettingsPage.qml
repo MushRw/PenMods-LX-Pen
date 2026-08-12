@@ -136,6 +136,9 @@ Item {
                         onClicked: {
                             root.autoNext = !root.autoNext
                             root.saveSettings()
+                            if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setAutoNext) {
+                                lxpenPlayer.setAutoNext(root.autoNext)
+                            }
                         }
                     }
                 }

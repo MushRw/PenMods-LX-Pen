@@ -231,11 +231,21 @@ globalThis.__lx_on_rpc = jsonStr => {
     return;
   }
   const id = String(req.id);
+  /* SO 侧（宿主播放器组件）请求时把响应额外写到独立文件，避免与 QML 轮询争用同一输出文件 */
+  const respPath = String(req.respPath || '');
   Promise.resolve()
     .then(() => __handleRpc(req))
     .then(
-      data => native.rpc_done(id, JSON.stringify({ ok: true, data })),
-      err => native.rpc_done(id, JSON.stringify({ ok: false, error: String(err && err.message ? err.message : err) }))
+      data => {
+        const json = JSON.stringify({ ok: true, data });
+        native.rpc_done(id, json);
+        if (respPath) native.file_write(respPath, json);
+      },
+      err => {
+        const json = JSON.stringify({ ok: false, error: String(err && err.message ? err.message : err) });
+        native.rpc_done(id, json);
+        if (respPath) native.file_write(respPath, json);
+      }
     );
 };
 

@@ -2,15 +2,24 @@
 /*
  * LX Pen 宿主播放器接管组件。
  * 把音源 URL（在线直连）或本地文件交给宿主 YMediaManager::playAudio 播放，
- * 宿主播放器自动提供播放页 / 悬浮窗 / 后台播放；hook onSoundEnd 驱动 QML 自动连播。
+ * 宿主播放器自动提供播放页 / 悬浮窗 / 后台播放。
+ * 播放队列与自动连播在 SO 内维护（不随 QML 页面销毁），
+ * 需要播放链接时通过 runner 的 FIFO RPC 现取（musicUrl / lyric / download）。
  */
 #include "PluginSDK.h"
 
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QCryptographicHash>
 #include <QObject>
-#include <QQmlEngine>
 #include <QQmlContext>
+#include <QQmlEngine>
 #include <QString>
-#include <QStringList>
+#include <QThread>
+#include <QVariantList>
 
 #include <cstdint>
 #include <cstdio>
@@ -84,12 +93,86 @@ static const char* kSetPlayState = "_ZN19YMediaPlayerManager12setPlayStateERKN12
 static const char* kEntityCtor = "_ZN18YColumnMediaEntityC2EP7QObject";
 static const char* kOnSoundEnd = "_ZN19YMediaPlayerManager10onSoundEndEj";
 
+static const char* kRunnerInFifo = "/tmp/lxpen_in";
+
 /* ---------------- 播放器对象 ---------------- */
 
 class LxPenPlayer : public QObject {
     Q_OBJECT
 public:
     explicit LxPenPlayer(QObject* parent = nullptr) : QObject(parent) {}
+
+    Q_INVOKABLE void setQueue(const QVariantList& songs, int index, bool autoNext) {
+        m_queue = QJsonArray::fromVariantList(songs);
+        m_index = index;
+        m_autoNext = autoNext;
+    }
+
+    Q_INVOKABLE void setAutoNext(bool on) { m_autoNext = on; }
+    Q_INVOKABLE void setQuality(const QString& q) { m_quality = q; }
+
+    Q_INVOKABLE void playIndex(int idx) {
+        if (idx < 0 || idx >= m_queue.size()) {
+            emit playError(QStringLiteral("队列为空或索引越界"));
+            return;
+        }
+        m_index = idx;
+        const QJsonObject song = m_queue.at(idx).toObject();
+        const QString title = song.value(QStringLiteral("name")).toString() + QStringLiteral(" - ") +
+                              song.value(QStringLiteral("singer")).toString();
+        const QString source = song.value(QStringLiteral("source")).toString();
+        if (source.isEmpty()) {
+            emit playError(QStringLiteral("缺少音源标识"));
+            return;
+        }
+
+        /* 1. 取播放链接 */
+        QJsonObject mcmd;
+        mcmd.insert(QStringLiteral("cmd"), QStringLiteral("script"));
+        mcmd.insert(QStringLiteral("source"), source);
+        mcmd.insert(QStringLiteral("action"), QStringLiteral("musicUrl"));
+        QJsonObject info;
+        info.insert(QStringLiteral("type"), m_quality.isEmpty() ? QStringLiteral("128k") : m_quality);
+        info.insert(QStringLiteral("musicInfo"), song);
+        mcmd.insert(QStringLiteral("info"), info);
+        const QJsonObject mresp = rpc(mcmd, 20000);
+        if (!mresp.value(QStringLiteral("ok")).toBool()) {
+            emit playError(QStringLiteral("获取播放链接失败: ") + mresp.value(QStringLiteral("error")).toString());
+            return;
+        }
+        const QString url = mresp.value(QStringLiteral("data")).toString();
+
+        /* 2. 取歌词（失败不影响播放） */
+        QString lrcPath;
+        QJsonObject lcmd;
+        lcmd.insert(QStringLiteral("cmd"), QStringLiteral("lyric"));
+        lcmd.insert(QStringLiteral("source"), source);
+        lcmd.insert(QStringLiteral("info"), song);
+        const QJsonObject lresp = rpc(lcmd, 15000);
+        if (lresp.value(QStringLiteral("ok")).toBool()) {
+            lrcPath = lresp.value(QStringLiteral("data")).toObject().value(QStringLiteral("path")).toString();
+        }
+
+        /* 3. 在线直连；失败则下载兜底 */
+        if (doPlay(url, title, lrcPath, true)) {
+            emit songStarted(m_index);
+            return;
+        }
+        const QString safeId = QString::fromLatin1(QCryptographicHash::hash(
+            song.value(QStringLiteral("songmid")).toString().toUtf8(), QCryptographicHash::Md5).toHex());
+        const QString path = QStringLiteral("/tmp/lxpen_%1.mp3").arg(safeId);
+        QJsonObject dcmd;
+        dcmd.insert(QStringLiteral("cmd"), QStringLiteral("download"));
+        dcmd.insert(QStringLiteral("url"), url);
+        dcmd.insert(QStringLiteral("path"), path);
+        const QJsonObject dresp = rpc(dcmd, 30000);
+        if (!dresp.value(QStringLiteral("ok")).toBool()) {
+            emit playError(QStringLiteral("下载播放失败: ") + dresp.value(QStringLiteral("error")).toString());
+            return;
+        }
+        doPlay(path, title, lrcPath, false);
+        emit songStarted(m_index);
+    }
 
     Q_INVOKABLE bool playUrl(const QString& url, const QString& title, const QString& lrcPath = QString()) {
         return doPlay(url, title, lrcPath, true);
@@ -113,10 +196,62 @@ public:
         }
     }
 
+    /* 供 onSoundEnd hook 调用：通知 UI + 自动连播 */
+    void handleSongEnded() {
+        emit songEnded();
+        if (m_autoNext && m_queue.size() > 0) {
+            int next = m_index + 1;
+            if (next >= m_queue.size()) next = 0;
+            playIndex(next);
+        }
+    }
+
 signals:
     void songEnded();
+    void songStarted(int index);
+    void playError(const QString& message);
 
 private:
+    /* runner FIFO JSON-RPC：写命令到 /tmp/lxpen_in，从独立响应文件读回 */
+    QJsonObject rpc(const QJsonObject& cmd, int timeoutMs) {
+        const int id = ++m_rpcSeq;
+        const QString respPath = QStringLiteral("/tmp/lxpen_so_resp_%1.json").arg(id);
+        QFile::remove(respPath);
+        QJsonObject c = cmd;
+        c.insert(QStringLiteral("id"), id);
+        c.insert(QStringLiteral("respPath"), respPath);
+        const QByteArray payload = QJsonDocument(c).toJson(QJsonDocument::Compact) + '\n';
+
+        QFile fifo(QString::fromLatin1(kRunnerInFifo));
+        if (!fifo.open(QIODevice::WriteOnly | QIODevice::Unbuffered)) {
+            QFile::remove(respPath);
+            return QJsonObject{{QStringLiteral("ok"), false},
+                               {QStringLiteral("error"), QStringLiteral("runner fifo unavailable")}};
+        }
+        fifo.write(payload);
+        fifo.close();
+
+        const int stepMs = 40;
+        int waited = 0;
+        while (waited < timeoutMs) {
+            QThread::msleep(stepMs);
+            waited += stepMs;
+            QFile rf(respPath);
+            if (rf.exists() && rf.open(QIODevice::ReadOnly)) {
+                const QByteArray data = rf.readAll();
+                rf.close();
+                QFile::remove(respPath);
+                QJsonParseError err;
+                const QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+                if (err.error == QJsonParseError::NoError && doc.isObject()) return doc.object();
+                break;
+            }
+        }
+        QFile::remove(respPath);
+        return QJsonObject{{QStringLiteral("ok"), false},
+                           {QStringLiteral("error"), QStringLiteral("rpc timeout")}};
+    }
+
     bool doPlay(const QString& src, const QString& title, const QString& lrcPath, bool isUrl) {
         if (!g_hook_api || !g_hook_api->querySymbol) {
             fprintf(stderr, "[lxpen] hook api missing\n");
@@ -126,7 +261,7 @@ private:
         void* ymedia = resolveInstance(kYMediaManagerInstance);
         void* mpm = resolveTInstance(kYMediaPlayerManagerT);
         if (!yglobal || !ymedia || !mpm) {
-            fprintf(stderr, "[lxpen] host instances missing (g=%p m=%p p=%p)\n", yglobal, ymedia, mpm);
+            fprintf(stderr, "[lxpen] host instances missing\n");
             return false;
         }
 
@@ -173,6 +308,12 @@ private:
         entity->~YColumnMediaEntity();
         return true;
     }
+
+    QJsonArray m_queue;
+    int m_index = -1;
+    bool m_autoNext = false;
+    QString m_quality;
+    int m_rpcSeq = 0;
 };
 
 static LxPenPlayer* g_player = nullptr;
@@ -180,9 +321,7 @@ static OnSoundEndFn g_origOnSoundEnd = nullptr;
 
 static void* onSoundEndDetour(void* self, uint32_t seq) {
     if (g_origOnSoundEnd) g_origOnSoundEnd(self, seq);
-    if (g_player) {
-        QMetaObject::invokeMethod(g_player, "songEnded", Qt::QueuedConnection);
-    }
+    if (g_player) g_player->handleSongEnded();
     return self;
 }
 
