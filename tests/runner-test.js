@@ -110,6 +110,8 @@ globalThis.__lx_native_call__request_start = (id, url, optsJson) => {
       };
     } else if (url.indexOf('hotword.kuwo.cn') >= 0) {
       resp = { status: 200, headers: {}, body: JSON.stringify({ status: 'ok', tagvalue: [{ key: '热搜词1' }, { key: '热搜词2' }] }) };
+    } else if (url.indexOf('example.com/a.mp3') >= 0) {
+      resp = { status: 200, headers: {}, body: enc.bytesToB64(NodeBuffer.from('ID3FAKEMP3BYTES')) };
     } else {
       resp = {
         status: 200,
@@ -222,6 +224,12 @@ async function main() {
 
   const script = await rpc({ cmd: 'script', source: 'kw', action: 'musicUrl', info: { type: '128k', musicInfo: { songmid: '123' } } });
   check('script musicUrl', script.ok === true && script.data === 'https://example.com/a.mp3');
+
+  const dl = await rpc({ cmd: 'download', url: 'https://example.com/a.mp3', path: '/tmp/lxpen_x.mp3' });
+  check('download ok', dl.ok === true && dl.data.path === '/tmp/lxpen_x.mp3' && dl.data.size === 15);
+
+  const lyricPath = await rpc({ cmd: 'lyric', source: 'kw', info: { songmid: '123' } });
+  check('lyric path', lyricPath.ok === true && lyricPath.data.path === '/tmp/lxpen_123.lrc');
 
   const bad = await rpc({ cmd: 'search', platform: 'xx', keyword: 'x' });
   check('unknown platform error', bad.ok === false);

@@ -2,7 +2,7 @@ import QtQuick 2.12
 import ".."
 import "../components"
 
-/* 设置页：音源脚本 / 音质 / mpv 路径 / 自动连播 / 重启 / 日志 */
+/* 设置页：音源脚本 / 音质 / 自动连播 / 重启 / 日志 */
 Item {
     id: settingsPage
     anchors.fill: parent
@@ -96,34 +96,6 @@ Item {
                             }
                         }
                     }
-                }
-            }
-
-            Text {
-                text: "mpv 路径"
-                color: Theme.textSub
-                font.pixelSize: Theme.pxSmall
-                font.bold: true
-            }
-            Rectangle {
-                width: parent.width
-                height: 28
-                radius: Theme.radiusSmall
-                color: Theme.card
-                border.color: Theme.line
-                border.width: 1
-                Text {
-                    anchors.left: parent.left; anchors.leftMargin: 8
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: root.mpvPath
-                    color: Theme.textSub
-                    font.pixelSize: Theme.pxSmall
-                    elide: Text.ElideRight
-                    width: parent.width - 16
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    onClicked: toast.show("一般无需修改", 1500)
                 }
             }
 
@@ -226,7 +198,9 @@ Item {
             id: stopArea
             anchors.fill: parent
             onClicked: {
-                root.stopRunner()
+                if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.stop) {
+                    lxpenPlayer.stop()
+                }
                 root.backButtonClicked()
             }
         }

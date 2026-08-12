@@ -1,9 +1,10 @@
 {
     "id": "com.lxpen.music",
     "name": "LX Pen",
-    "version": "0.1.3",
+    "version": "0.2.0",
     "author": "LX Pen",
     "description": "基于 LX Music 的五源音乐播放插件（酷我/酷狗/咪咕/网易云/QQ）",
     "icon": "file://userdisk/PenMods/plugins/lx-pen/icon.png",
-    "main_qml": "qml/main.qml"
+    "main_qml": "qml/main.qml",
+    "main_so": "liblxpen_player.so"
 }

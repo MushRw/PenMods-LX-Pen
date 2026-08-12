@@ -289,7 +289,7 @@ Rectangle {
             var script = String(selectedScript).replace(/[^A-Za-z0-9_.-]/g, "")
             var cmd = "nohup " + pluginDir + "/bin/penmusic --script '" + pluginDir + "/scripts/" + script +
                       "' --js-dir '" + pluginDir + "/js' --in " + inFifo + " --out " + outFile +
-                      " --mpv " + mpvSock + " --mpv-bin '" + mpvPath + "' > /tmp/lxpen.log 2>&1 &"
+                      " > /tmp/lxpen.log 2>&1 &"
             shell.startDetached(cmd)
         }
         pollTimer.start()
@@ -341,37 +341,67 @@ Rectangle {
     function playSong(song) {
         if (!song) return
         currentSong = song
-        coverPath = ""
-        lyricData = null
         queueIndex = queue.indexOf(song)
-        page = "player"
-        rpcSend({ cmd: "script", source: song.source, action: "musicUrl", info: { type: quality, musicInfo: song } }, function(res) {
-            if (!res.ok) {
-                toast.show(res.error, 3000)
+        // 播放交给宿主播放器（lxpenPlayer），LX Pen 停留在搜索页
+        var url = ""
+        var lrcPath = ""
+        var urlReady = false
+        var lyricDone = false
+        var played = false
+
+        function tryPlay() {
+            if (played || !urlReady) return
+            played = true
+            var title = song.name + " - " + song.singer
+            var ok = false
+            if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.playUrl) {
+                ok = lxpenPlayer.playUrl(url, title, lrcPath || "")
+            }
+            if (!ok) {
+                fallbackDownloadPlay(url, song, lrcPath)
                 return
             }
-            rpcSend({ cmd: "play", url: res.data, title: song.name + " - " + song.singer }, function() {})
-            fetchLyric(song)
-            fetchCover(song)
-        })
-    }
+            // 8s 内宿主未进入播放（PlayState.PLAYING=0）→ 下载兜底
+            var checkTimer = Qt.createQmlObject("import QtQuick 2.12; Timer { interval: 8000; repeat: false }", root)
+            checkTimer.triggered.connect(function() {
+                checkTimer.destroy()
+                var st = -1
+                try { st = mediaPlayerManager ? mediaPlayerManager.playState : -1 } catch (e) {}
+                if (st !== 0) fallbackDownloadPlay(url, song, lrcPath)
+            })
+            checkTimer.start()
+        }
 
-    function fetchLyric(song) {
+        rpcSend({ cmd: "script", source: song.source, action: "musicUrl", info: { type: quality, musicInfo: song } }, function(res) {
+            if (!res.ok) { toast.show(res.error, 3000); return }
+            url = res.data
+            urlReady = true
+            tryPlay()
+        })
         rpcSend({ cmd: "lyric", source: song.source, info: song }, function(res) {
-            if (res.ok) {
-                lyricData = parseLrc(res.data)
-                updateLyricPosition()
-            } else {
-                lyricData = []
-            }
+            if (res.ok && res.data && res.data.path) lrcPath = res.data.path
+            lyricDone = true
+            tryPlay()
         })
+        // 歌词最迟 2.5s 后不再等待，避免拖慢起播
+        var lyricWait = Qt.createQmlObject("import QtQuick 2.12; Timer { interval: 2500; repeat: false }", root)
+        lyricWait.triggered.connect(function() {
+            lyricWait.destroy()
+            lyricDone = true
+            tryPlay()
+        })
+        lyricWait.start()
     }
 
-    function fetchCover(song) {
-        var img = song.img
-        if (!img) return
-        rpcSend({ cmd: "cover", url: img }, function(res) {
-            if (res.ok && res.data && res.data.path) coverPath = res.data.path
+    function fallbackDownloadPlay(url, song, lrcPath) {
+        var safeId = String(song.songmid || song.hash || "x").replace(/[^A-Za-z0-9_-]/g, "")
+        var path = "/tmp/lxpen_" + safeId + ".mp3"
+        toast.show("在线直连失败，下载播放…", 1500)
+        rpcSend({ cmd: "download", url: url, path: path }, function(res) {
+            if (!res.ok) { toast.show("播放失败: " + res.error, 3000); return }
+            if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.playFile) {
+                lxpenPlayer.playFile(path, song.name + " - " + song.singer, lrcPath || "")
+            }
         })
     }
 
@@ -475,11 +505,6 @@ Rectangle {
         visible: root.page === "home"
     }
 
-    PlayerPage {
-        id: playerPage
-        visible: root.page === "player"
-    }
-
     SettingsPage {
         visible: root.page === "settings"
     }
@@ -510,6 +535,14 @@ Rectangle {
         interval: 400
         repeat: true
         onTriggered: root.pollOut()
+    }
+
+    Connections {
+        target: (typeof lxpenPlayer !== "undefined") ? lxpenPlayer : null
+        ignoreUnknownSignals: true
+        function onSongEnded() {
+            if (root.autoNext && root.currentSong && root.queue.length > 0) root.playNext()
+        }
     }
 
     Component.onCompleted: {

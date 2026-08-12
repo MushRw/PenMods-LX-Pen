@@ -46,6 +46,13 @@ jobs:
           chmod +x runner/build.sh
           runner/build.sh
 
+      - name: 交叉编译宿主播放器组件（liblxpen_player.so）
+        run: |
+          wget -q https://github.com/Redbeanw44602/aarch64-linux-qt-5.15.2/releases/latest/download/aarch64-linux-qt-5.15.2.tar.gz -O /tmp/qt.tar.gz
+          mkdir -p .qt-aarch64
+          tar -xzf /tmp/qt.tar.gz -C .qt-aarch64
+          QTDIR=$PWD/.qt-aarch64 sh player/build-player.sh
+
       - name: 打包插件
         run: |
           python scripts/package.py

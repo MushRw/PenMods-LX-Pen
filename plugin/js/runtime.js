@@ -49,12 +49,35 @@ async function handleLyric(req) {
   const info = req.info || {};
   const src = getSrc(platform);
   const res = await getPromise(src.getLyric(info));
+  const lyricText = (res && res.lyric) || '';
+  /* 顺带把 LRC 原文写到 /tmp，供宿主播放器（lxpenPlayer）显示歌词 */
+  let path = '';
+  if (lyricText) {
+    const mid = String((info && (info.songmid || info.hash)) || 'x').replace(/[^A-Za-z0-9_-]/g, '');
+    const p = '/tmp/lxpen_' + mid + '.lrc';
+    if (native.file_write(p, lyricText)) path = p;
+  }
   return {
-    lyric: (res && res.lyric) || '',
+    lyric: lyricText,
     tlyric: (res && res.tlyric) || '',
     rlyric: (res && res.rlyric) || '',
     lxlyric: (res && res.lxlyric) || '',
+    path,
   };
+}
+
+async function handleDownload(req) {
+  const url = String(req.url || '');
+  const path = String(req.path || '');
+  if (!url || !path) throw new Error('empty url/path');
+  const resp = await I.request(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36' },
+    binary: true,
+    timeout: 30000,
+  });
+  if (resp.status !== 200) throw new Error('download http ' + resp.status);
+  if (!native.file_write(path, resp.body)) throw new Error('download write failed');
+  return { path, size: resp.body && resp.body.byteLength ? resp.body.byteLength : 0 };
 }
 
 async function handlePic(req) {
@@ -185,6 +208,7 @@ async function __handleRpc(req) {
   switch (req.cmd) {
     case 'search': return await handleSearch(req);
     case 'lyric': return await handleLyric(req);
+    case 'download': return await handleDownload(req);
     case 'pic': return await handlePic(req);
     case 'cover': return await handleCover(req);
     case 'script': return await handleScript(req);
