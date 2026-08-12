@@ -268,14 +268,27 @@ Rectangle {
         updateLyricPosition()
     }
 
+    function startFreshRunner() {
+        // 全新启动（先确保无残留 runner）；注意 busybox pkill/pgrep 不支持 -x，
+        // 且不能用 -f（会匹配到执行命令的 shell 自身导致自杀），用普通 pkill 按进程名匹配
+        shell.exec("pkill -9 penmusic 2>/dev/null; sleep 1; rm -f " + inFifo + " " + outFile + " " + mpvSock + "; mkfifo " + inFifo + "; touch " + outFile + "; true")
+        var script = String(selectedScript).replace(/[^A-Za-z0-9_.-]/g, "")
+        var cmd = "nohup " + pluginDir + "/bin/penmusic --script '" + pluginDir + "/scripts/" + script +
+                  "' --js-dir '" + pluginDir + "/js' --in " + inFifo + " --out " + outFile +
+                  " > /tmp/lxpen.log 2>&1 &"
+        shell.startDetached(cmd)
+        readOffset = 0
+        pendingOut = ""
+    }
+
     function startRunner() {
         if (runnerStarting) return
         runnerStarting = true
         scriptReady = false
         readOffset = 0
         pendingOut = ""
-        // 后台播放：若已有 runner 在跑（关页面不杀），直接重连，从输出文件尾部开始读
-        // 注意：busybox pgrep 不支持 -x，用普通 pgrep（按进程名匹配）
+        // 后台播放：若已有 runner 在跑（关页面不杀），直接重连，从输出文件尾部开始读；
+        // 重连 ping 失败（runner 僵死）则强杀后全新启动
         var alive = shell.exec("pgrep penmusic >/dev/null 2>&1 && echo 1 || echo 0").trim()
         if (alive === "1") {
             var sz = shell.exec("wc -c < '" + outFile + "' 2>/dev/null; true").trim()
@@ -287,17 +300,12 @@ Rectangle {
                     scriptError = ""
                     pushLog("info", "已重连后台 runner")
                 } else {
-                    pushLog("warn", "重连后台 runner 失败")
+                    pushLog("warn", "重连后台 runner 失败，全新启动")
+                    startFreshRunner()
                 }
             }, 3000)
         } else {
-            // 全新启动（无残留 runner）；注意 pkill 必须用 -x，-f 会匹配到执行命令的 shell 自身导致自杀
-            shell.exec("rm -f " + inFifo + " " + outFile + " " + mpvSock + "; mkfifo " + inFifo + "; touch " + outFile + "; true")
-            var script = String(selectedScript).replace(/[^A-Za-z0-9_.-]/g, "")
-            var cmd = "nohup " + pluginDir + "/bin/penmusic --script '" + pluginDir + "/scripts/" + script +
-                      "' --js-dir '" + pluginDir + "/js' --in " + inFifo + " --out " + outFile +
-                      " > /tmp/lxpen.log 2>&1 &"
-            shell.startDetached(cmd)
+            startFreshRunner()
         }
         pollTimer.start()
         watchdog.restart()
@@ -307,7 +315,7 @@ Rectangle {
     function stopRunner() {
         if (!destroying) rpcSend({ cmd: "quit" }, null, 2000)
         // 显式停止：杀 runner 与 mpv（mpv 包装脚本退出后唤醒锁由 AudioDaemon 自动释放）
-        shell.exec("pkill -9 -x penmusic 2>/dev/null; pkill -9 -x mpv 2>/dev/null; true")
+        shell.exec("pkill -9 penmusic 2>/dev/null; pkill -9 mpv 2>/dev/null; true")
         scriptReady = false
     }
 
