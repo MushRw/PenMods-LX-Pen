@@ -269,7 +269,8 @@ Rectangle {
         readOffset = 0
         pendingOut = ""
         // 先确保只有一个 runner（app 被强杀时旧 runner 可能残留，导致双写损坏输出文件）
-        shell.exec("pkill -9 -f 'penmusic --script' 2>/dev/null; sleep 1; rm -f " + inFifo + " " + outFile + " " + mpvSock + "; mkfifo " + inFifo + "; touch " + outFile + "; true")
+        // 注意：pkill 必须用 -x 精确匹配进程名，-f 会匹配到执行命令的 shell 自身导致自杀
+        shell.exec("pkill -9 -x penmusic 2>/dev/null; sleep 1; rm -f " + inFifo + " " + outFile + " " + mpvSock + "; mkfifo " + inFifo + "; touch " + outFile + "; true")
         var script = String(selectedScript).replace(/[^A-Za-z0-9_.-]/g, "")
         var cmd = "nohup " + pluginDir + "/bin/penmusic --script '" + pluginDir + "/scripts/" + script +
                   "' --js-dir '" + pluginDir + "/js' --in " + inFifo + " --out " + outFile +
@@ -282,7 +283,7 @@ Rectangle {
 
     function stopRunner() {
         if (!destroying) rpcSend({ cmd: "quit" }, null, 2000)
-        shell.exec("pkill -f penmusic 2>/dev/null; true")
+        shell.exec("pkill -9 -x penmusic 2>/dev/null; true")
         scriptReady = false
     }
 
