@@ -16,9 +16,7 @@
 #include <cstdio>
 #include <cstring>
 
-extern "C" {
 PluginHookAPI* g_hook_api = NULL;
-}
 
 /* ---------------- 宿主结构体（布局照抄 PenMods MusicPlayer） ---------------- */
 
