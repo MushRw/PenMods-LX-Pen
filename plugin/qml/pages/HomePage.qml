@@ -123,9 +123,63 @@ Item {
                 onClicked: root.playSong(modelData)
             }
 
+            /* 搜索记录（无结果时显示，点击直接搜索） */
+            ListView {
+                id: historyView
+                anchors.fill: parent
+                visible: root.searchResult.length === 0 && !root.searching && root.searchHistory.length > 0
+                model: root.searchHistory
+                spacing: 2
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+
+                header: Text {
+                    width: historyView.width
+                    text: "搜索记录"
+                    color: Theme.textSub
+                    font.pixelSize: Theme.pxTiny
+                    font.bold: true
+                    leftPadding: 8
+                    topPadding: 2
+                }
+
+                footer: Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "清空搜索记录"
+                    color: Theme.textSub
+                    font.pixelSize: Theme.pxTiny
+                    topPadding: 4
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: root.clearHistory()
+                    }
+                }
+
+                delegate: Rectangle {
+                    width: historyView.width - 8
+                    height: 30
+                    radius: Theme.radiusSmall
+                    color: hisArea.pressed ? Theme.cardHi : "transparent"
+                    Text {
+                        anchors.left: parent.left; anchors.leftMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData
+                        color: Theme.text
+                        font.pixelSize: Theme.pxSmall
+                        elide: Text.ElideRight
+                        width: parent.width - 20
+                    }
+                    MouseArea {
+                        id: hisArea
+                        anchors.fill: parent
+                        onClicked: root.searchKeyword(modelData)
+                    }
+                }
+            }
+
             Text {
                 anchors.centerIn: parent
-                visible: root.searchResult.length === 0
+                visible: root.searchResult.length === 0 && root.searchHistory.length === 0
                 text: root.searching ? "搜索中..." : "输入关键词搜索"
                 color: Theme.textSub
                 font.pixelSize: Theme.pxNormal

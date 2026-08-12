@@ -24,6 +24,7 @@ Rectangle {
     property string keyword: ""
     property var searchResult: []
     property bool searching: false
+    property var searchHistory: []
 
     property var currentSong: null
     property var queue: []
@@ -118,6 +119,10 @@ Rectangle {
                 if (rs.rows.length) autoNext = rs.rows.item(0).value === "1"
                 rs = tx.executeSql("SELECT value FROM kv WHERE key='script'")
                 if (rs.rows.length) selectedScript = rs.rows.item(0).value
+                rs = tx.executeSql("SELECT value FROM kv WHERE key='history'")
+                if (rs.rows.length) {
+                    try { searchHistory = JSON.parse(rs.rows.item(0).value) || [] } catch (e) { searchHistory = [] }
+                }
             })
         } catch (e) { console.warn("loadSettings", e) }
     }
@@ -132,6 +137,7 @@ Rectangle {
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('mpv',?)", [mpvPath])
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('autoNext',?)", [autoNext ? "1" : "0"])
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('script',?)", [selectedScript])
+                tx.executeSql("INSERT OR REPLACE INTO kv VALUES('history',?)", [JSON.stringify(searchHistory)])
             })
         } catch (e) { console.warn("saveSettings", e) }
     }
@@ -329,6 +335,7 @@ Rectangle {
         rpcSend({ cmd: "search", platform: platform, keyword: keyword, page: 1 }, function(res) {
             searching = false
             if (res.ok) {
+                addHistory(keyword)
                 searchResult = res.data.list
                 queue = res.data.list
                 queueIndex = -1
@@ -336,6 +343,29 @@ Rectangle {
                 toast.show(res.error, 3000)
             }
         })
+    }
+
+    function addHistory(kw) {
+        kw = String(kw || "").trim()
+        if (!kw) return
+        var list = searchHistory.slice()
+        var idx = list.indexOf(kw)
+        if (idx >= 0) list.splice(idx, 1)
+        list.unshift(kw)
+        if (list.length > 15) list.length = 15
+        searchHistory = list
+        saveSettings()
+    }
+
+    function clearHistory() {
+        searchHistory = []
+        saveSettings()
+    }
+
+    function searchKeyword(kw) {
+        if (!kw) return
+        keyword = kw
+        doSearch()
     }
 
     function playSong(song) {
