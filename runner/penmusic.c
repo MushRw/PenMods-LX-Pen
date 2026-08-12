@@ -1419,7 +1419,7 @@ static void mpv_poll_props(void) {
         return;
     }
     g_mpv_next_poll = now + 1000;
-    g_mpv_pending = 1;
+    g_mpv_pending = 3; /* 一次轮询发 3 个属性请求，等 3 个响应都到齐再上报状态 */
     g_mpv_time = -1;
     g_mpv_duration = -1;
     g_mpv_pause = -1;

@@ -38,7 +38,7 @@ Rectangle {
 
     property string mpvPath: "/userdisk/mpv/mpv"
     property string quality: "128k"
-    property bool autoNext: true
+    property bool autoNext: false
     property var scriptList: []
     property string selectedScript: "example-kw-source.js"
     property var scriptSources: ({})
