@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 /*
  * LX Pen 宿主播放器接管组件。
- * 把音源 URL（在线直连）或本地文件交给宿主 YMediaManager::playAudio 播放，
- * 宿主播放器自动提供播放页 / 悬浮窗 / 后台播放。
- * 播放队列与自动连播在 SO 内维护（不随 QML 页面销毁），
- * 需要播放链接时通过 runner 的 FIFO RPC 现取（musicUrl / lyric / download）。
+ * 播放队列与自动连播在 SO 内维护（不随 QML 页面销毁）。
+ * 播放流程为异步状态机（QTimer 轮询 runner 响应文件），不阻塞 app 主线程：
+ *   musicUrl -> lyric -> 下载到本地文件 -> playFile；下载失败退回在线直连。
  */
 #include "PluginSDK.h"
 
+#include <QDateTime>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -18,7 +18,7 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QString>
-#include <QThread>
+#include <QTimer>
 #include <QVariantList>
 
 #include <cstdint>
@@ -105,7 +105,11 @@ static const char* kRunnerInFifo = "/tmp/lxpen_in";
 class LxPenPlayer : public QObject {
     Q_OBJECT
 public:
-    explicit LxPenPlayer(QObject* parent = nullptr) : QObject(parent) {}
+    explicit LxPenPlayer(QObject* parent = nullptr) : QObject(parent) {
+        m_timer = new QTimer(this);
+        m_timer->setInterval(50);
+        connect(m_timer, &QTimer::timeout, this, &LxPenPlayer::onTick);
+    }
 
     Q_INVOKABLE void setQueue(const QVariantList& songs, int index, bool autoNext) {
         m_queue = QJsonArray::fromVariantList(songs);
@@ -117,75 +121,24 @@ public:
     Q_INVOKABLE void setQuality(const QString& q) { m_quality = q; }
 
     Q_INVOKABLE void playIndex(int idx) {
-        soLog("playIndex idx=" + QString::number(idx) + " queue=" + QString::number(m_queue.size()));
         if (idx < 0 || idx >= m_queue.size()) {
             emit playError(QStringLiteral("队列为空或索引越界"));
             return;
         }
+        cancelPlay();
         m_index = idx;
-        const QJsonObject song = m_queue.at(idx).toObject();
-        const QString title = song.value(QStringLiteral("name")).toString() + QStringLiteral(" - ") +
-                              song.value(QStringLiteral("singer")).toString();
-        const QString source = song.value(QStringLiteral("source")).toString();
-        if (source.isEmpty()) {
+        m_currentSong = m_queue.at(idx).toObject();
+        m_currentTitle = m_currentSong.value(QStringLiteral("name")).toString() + QStringLiteral(" - ") +
+                         m_currentSong.value(QStringLiteral("singer")).toString();
+        m_currentSource = m_currentSong.value(QStringLiteral("source")).toString();
+        m_currentLrc = QString();
+        m_currentUrl = QString();
+        m_currentPath = QString();
+        if (m_currentSource.isEmpty()) {
             emit playError(QStringLiteral("缺少音源标识"));
             return;
         }
-
-        /* 1. 取播放链接 */
-        QJsonObject mcmd;
-        mcmd.insert(QStringLiteral("cmd"), QStringLiteral("script"));
-        mcmd.insert(QStringLiteral("source"), source);
-        mcmd.insert(QStringLiteral("action"), QStringLiteral("musicUrl"));
-        QJsonObject info;
-        info.insert(QStringLiteral("type"), m_quality.isEmpty() ? QStringLiteral("128k") : m_quality);
-        info.insert(QStringLiteral("musicInfo"), song);
-        mcmd.insert(QStringLiteral("info"), info);
-        const QJsonObject mresp = rpc(mcmd, 20000);
-        if (!mresp.value(QStringLiteral("ok")).toBool()) {
-            soLog("musicUrl rpc failed: " + mresp.value(QStringLiteral("error")).toString());
-            emit playError(QStringLiteral("获取播放链接失败: ") + mresp.value(QStringLiteral("error")).toString());
-            return;
-        }
-        const QString url = mresp.value(QStringLiteral("data")).toString();
-        soLog("musicUrl ok: " + url.left(60));
-
-        /* 2. 取歌词（失败不影响播放） */
-        QString lrcPath;
-        QJsonObject lcmd;
-        lcmd.insert(QStringLiteral("cmd"), QStringLiteral("lyric"));
-        lcmd.insert(QStringLiteral("source"), source);
-        lcmd.insert(QStringLiteral("info"), song);
-        const QJsonObject lresp = rpc(lcmd, 15000);
-        if (lresp.value(QStringLiteral("ok")).toBool()) {
-            lrcPath = lresp.value(QStringLiteral("data")).toObject().value(QStringLiteral("path")).toString();
-        }
-        soLog("lrc path: " + lrcPath);
-
-        /* 3. 主路径：下载到本地文件再播放（宿主对本地文件的 playAudio 切歌可靠；
-              在线直连 mUrl 首次可播，但切歌不换流，仅作下载失败后备） */
-        const QString safeId = QString::fromLatin1(QCryptographicHash::hash(
-            song.value(QStringLiteral("songmid")).toString().toUtf8(), QCryptographicHash::Md5).toHex());
-        const QString path = QStringLiteral("/tmp/lxpen_%1.mp3").arg(safeId);
-        QJsonObject dcmd;
-        dcmd.insert(QStringLiteral("cmd"), QStringLiteral("download"));
-        dcmd.insert(QStringLiteral("url"), url);
-        dcmd.insert(QStringLiteral("path"), path);
-        const QJsonObject dresp = rpc(dcmd, 30000);
-        if (dresp.value(QStringLiteral("ok")).toBool()) {
-            doPlay(path, title, lrcPath, false);
-            soLog("file play started: " + path);
-            emit songStarted(m_index);
-            return;
-        }
-        soLog("download failed, try online: " + dresp.value(QStringLiteral("error")).toString());
-        if (doPlay(url, title, lrcPath, true)) {
-            waitForPlaying(5000);
-            soLog("online fallback attempted");
-            emit songStarted(m_index);
-            return;
-        }
-        emit playError(QStringLiteral("播放失败: ") + dresp.value(QStringLiteral("error")).toString());
+        startStep(Step::GetUrl);
     }
 
     Q_INVOKABLE bool playUrl(const QString& url, const QString& title, const QString& lrcPath = QString()) {
@@ -208,11 +161,11 @@ public:
                 setState(mpm, &stopped);
             }
         }
+        cancelPlay();
     }
 
-    /* 供 onSoundEnd hook 调用：通知 UI + 自动连播 */
     void handleSongEnded() {
-        /* 手动停止（切歌/停止）时宿主也会发 onSoundEnd，但此时非 PLAYING，忽略以免误触发连播 */
+        /* 手动停止（切歌/停止）时宿主也会发 onSoundEnd，此时非 PLAYING，忽略以免误触发连播 */
         void* mpm = resolveTInstance(kYMediaPlayerManagerT);
         if (mpm && g_hook_api && g_hook_api->querySymbol) {
             typedef int (*PlayStateFn)(void*);
@@ -227,7 +180,6 @@ public:
         }
     }
 
-    /* 宿主播放器页面的上一首/下一首：路由到我们的队列 */
     void handleNext() {
         if (m_queue.size() == 0) return;
         int next = m_index + 1;
@@ -250,59 +202,200 @@ signals:
     void playError(const QString& message);
 
 private:
-    /* runner FIFO JSON-RPC：写命令到 /tmp/lxpen_in，从独立响应文件读回 */
-    QJsonObject rpc(const QJsonObject& cmd, int timeoutMs) {
-        const int id = ++m_rpcSeq;
-        const QString respPath = QStringLiteral("/tmp/lxpen_so_resp_%1.json").arg(id);
-        QFile::remove(respPath);
-        QJsonObject c = cmd;
-        c.insert(QStringLiteral("id"), id);
-        c.insert(QStringLiteral("respPath"), respPath);
-        const QByteArray payload = QJsonDocument(c).toJson(QJsonDocument::Compact) + '\n';
+    enum class Step { Idle, GetUrl, GetLyric, Download, PlayFile, Online, WaitPlaying };
 
-        /* 用 POSIX 非阻塞写 FIFO：无读者时立即失败而非阻塞主线程 */
+    void startStep(Step s) {
+        m_step = s;
+        m_waitResp = false;
+        m_timer->start();
+    }
+
+    void sendRpcStep(const QJsonObject& cmd, int timeoutMs) {
+        m_respId = ++m_rpcSeq;
+        m_respPath = QStringLiteral("/tmp/lxpen_so_resp_%1.json").arg(m_respId);
+        QFile::remove(m_respPath);
+        QJsonObject c = cmd;
+        c.insert(QStringLiteral("id"), m_respId);
+        c.insert(QStringLiteral("respPath"), m_respPath);
+        const QByteArray payload = QJsonDocument(c).toJson(QJsonDocument::Compact) + '\n';
         int fd = ::open(kRunnerInFifo, O_WRONLY | O_NONBLOCK);
         if (fd < 0) {
-            soLog(QStringLiteral("fifo open failed: errno=") + QString::number(errno));
-            QFile::remove(respPath);
-            return QJsonObject{{QStringLiteral("ok"), false},
-                               {QStringLiteral("error"), QStringLiteral("runner fifo unavailable")}};
+            soLog("fifo open failed errno=" + QString::number(errno));
+            failStep(QStringLiteral("runner fifo unavailable"));
+            return;
         }
         const ssize_t w = ::write(fd, payload.constData(), payload.size());
         ::close(fd);
         if (w != (ssize_t)payload.size()) {
-            soLog(QStringLiteral("fifo write failed: wrote=") + QString::number((int)w) +
-                  QStringLiteral(" errno=") + QString::number(errno));
-            QFile::remove(respPath);
-            return QJsonObject{{QStringLiteral("ok"), false},
-                               {QStringLiteral("error"), QStringLiteral("runner fifo write failed")}};
+            failStep(QStringLiteral("runner fifo write failed"));
+            return;
         }
-        soLog(QStringLiteral("rpc sent id=") + QString::number(id) + QStringLiteral(" cmd=") + cmd.value(QStringLiteral("cmd")).toString());
+        soLog("rpc sent id=" + QString::number(m_respId) + " step=" + QString::number((int)m_step));
+        m_waitResp = true;
+        m_deadline = QDateTime::currentMSecsSinceEpoch() + timeoutMs;
+        m_timer->start();
+    }
 
-        const int stepMs = 40;
-        int waited = 0;
-        while (waited < timeoutMs) {
-            QThread::msleep(stepMs);
-            waited += stepMs;
-            QFile rf(respPath);
-            if (rf.exists() && rf.open(QIODevice::ReadOnly)) {
-                const QByteArray data = rf.readAll();
-                rf.close();
-                QFile::remove(respPath);
-                QJsonParseError err;
-                const QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-                if (err.error == QJsonParseError::NoError && doc.isObject()) {
-                    soLog(QStringLiteral("rpc resp id=") + QString::number(id) + QStringLiteral(" ok=") +
-                          doc.object().value(QStringLiteral("ok")).toBool());
-                    return doc.object();
-                }
-                break;
-            }
+    QJsonObject pollResp() {
+        QFile rf(m_respPath);
+        if (rf.exists() && rf.open(QIODevice::ReadOnly)) {
+            const QByteArray data = rf.readAll();
+            rf.close();
+            QFile::remove(m_respPath);
+            QJsonParseError err;
+            const QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+            if (err.error == QJsonParseError::NoError && doc.isObject()) return doc.object();
         }
-        QFile::remove(respPath);
-        soLog(QStringLiteral("rpc timeout id=") + QString::number(id));
-        return QJsonObject{{QStringLiteral("ok"), false},
-                           {QStringLiteral("error"), QStringLiteral("rpc timeout")}};
+        return QJsonObject();
+    }
+
+    void failStep(const QString& msg) {
+        soLog("fail: " + msg);
+        m_step = Step::Idle;
+        m_waitResp = false;
+        m_timer->stop();
+        emit playError(msg);
+    }
+
+    void finishPlay() {
+        m_step = Step::Idle;
+        m_waitResp = false;
+        m_timer->stop();
+        emit songStarted(m_index);
+    }
+
+    void cancelPlay() {
+        m_step = Step::Idle;
+        m_waitResp = false;
+        m_timer->stop();
+        if (!m_respPath.isEmpty()) QFile::remove(m_respPath);
+    }
+
+    void onTick() {
+        if (m_waitResp) {
+            const QJsonObject resp = pollResp();
+            if (!resp.isEmpty()) {
+                m_waitResp = false;
+                onRpcResp(resp);
+                return;
+            }
+            if (QDateTime::currentMSecsSinceEpoch() > m_deadline) {
+                soLog("rpc timeout step=" + QString::number((int)m_step));
+                if (m_step == Step::GetLyric) {
+                    m_currentLrc = QString();
+                    startStep(Step::Download);
+                } else {
+                    failStep(QStringLiteral("请求超时"));
+                }
+            }
+            return;
+        }
+
+        switch (m_step) {
+        case Step::GetUrl: {
+            soLog("step get url idx=" + QString::number(m_index));
+            QJsonObject cmd;
+            cmd.insert(QStringLiteral("cmd"), QStringLiteral("script"));
+            cmd.insert(QStringLiteral("source"), m_currentSource);
+            cmd.insert(QStringLiteral("action"), QStringLiteral("musicUrl"));
+            QJsonObject info;
+            info.insert(QStringLiteral("type"), m_quality.isEmpty() ? QStringLiteral("128k") : m_quality);
+            info.insert(QStringLiteral("musicInfo"), m_currentSong);
+            cmd.insert(QStringLiteral("info"), info);
+            sendRpcStep(cmd, 20000);
+            break;
+        }
+        case Step::GetLyric: {
+            QJsonObject cmd;
+            cmd.insert(QStringLiteral("cmd"), QStringLiteral("lyric"));
+            cmd.insert(QStringLiteral("source"), m_currentSource);
+            cmd.insert(QStringLiteral("info"), m_currentSong);
+            sendRpcStep(cmd, 15000);
+            break;
+        }
+        case Step::Download: {
+            soLog("step download: " + m_currentUrl.left(60));
+            const QString safeId = QString::fromLatin1(QCryptographicHash::hash(
+                m_currentSong.value(QStringLiteral("songmid")).toString().toUtf8(), QCryptographicHash::Md5).toHex());
+            m_currentPath = QStringLiteral("/tmp/lxpen_%1.mp3").arg(safeId);
+            QJsonObject cmd;
+            cmd.insert(QStringLiteral("cmd"), QStringLiteral("download"));
+            cmd.insert(QStringLiteral("url"), m_currentUrl);
+            cmd.insert(QStringLiteral("path"), m_currentPath);
+            sendRpcStep(cmd, 40000);
+            break;
+        }
+        case Step::PlayFile: {
+            soLog("step play file: " + m_currentPath);
+            doPlay(m_currentPath, m_currentTitle, m_currentLrc, false);
+            finishPlay();
+            break;
+        }
+        case Step::Online: {
+            soLog("step online fallback");
+            if (doPlay(m_currentUrl, m_currentTitle, m_currentLrc, true)) {
+                m_waitPlayingUntil = QDateTime::currentMSecsSinceEpoch() + 5000;
+                m_step = Step::WaitPlaying;
+                m_timer->start();
+            } else {
+                failStep(QStringLiteral("在线播放失败"));
+            }
+            break;
+        }
+        case Step::WaitPlaying: {
+            if (isPlaying()) {
+                soLog("host PLAYING (online)");
+                finishPlay();
+            } else if (QDateTime::currentMSecsSinceEpoch() > m_waitPlayingUntil) {
+                soLog("online did not play");
+                failStep(QStringLiteral("在线播放失败"));
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    void onRpcResp(const QJsonObject& resp) {
+        const bool ok = resp.value(QStringLiteral("ok")).toBool();
+        const QString err = resp.value(QStringLiteral("error")).toString();
+        switch (m_step) {
+        case Step::GetUrl:
+            if (ok) {
+                m_currentUrl = resp.value(QStringLiteral("data")).toString();
+                soLog("url ok: " + m_currentUrl.left(60));
+                startStep(Step::GetLyric);
+            } else {
+                failStep(QStringLiteral("获取播放链接失败: ") + err);
+            }
+            break;
+        case Step::GetLyric:
+            m_currentLrc = ok ? resp.value(QStringLiteral("data")).toObject().value(QStringLiteral("path")).toString()
+                              : QString();
+            soLog("lrc: " + m_currentLrc);
+            startStep(Step::Download);
+            break;
+        case Step::Download:
+            if (ok) {
+                soLog("download ok: " + m_currentPath);
+                startStep(Step::PlayFile);
+            } else {
+                soLog("download failed, online fallback: " + err);
+                startStep(Step::Online);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    bool isPlaying() {
+        void* mpm = resolveTInstance(kYMediaPlayerManagerT);
+        if (!mpm || !g_hook_api || !g_hook_api->querySymbol) return false;
+        typedef int (*PlayStateFn)(void*);
+        PlayStateFn getState = (PlayStateFn)g_hook_api->querySymbol("_ZNK19YMediaPlayerManager9playStateEv");
+        return getState && getState(mpm) == 0; /* PLAYING */
     }
 
     void soLog(const QString& msg) {
@@ -311,22 +404,6 @@ private:
             f.write(("[lxpen] " + msg + "\n").toUtf8());
             f.close();
         }
-    }
-
-    /* 轮询宿主播放状态，直到进入 PLAYING（PlayState::PLAYING == 0）或超时 */
-    bool waitForPlaying(int timeoutMs) {
-        void* mpm = resolveTInstance(kYMediaPlayerManagerT);
-        if (!mpm || !g_hook_api || !g_hook_api->querySymbol) return false;
-        typedef int (*PlayStateFn)(void*);
-        PlayStateFn getState = (PlayStateFn)g_hook_api->querySymbol("_ZNK19YMediaPlayerManager9playStateEv");
-        if (!getState) return false;
-        int waited = 0;
-        while (waited < timeoutMs) {
-            if (getState(mpm) == 0) return true; /* PLAYING */
-            QThread::msleep(100);
-            waited += 100;
-        }
-        return false;
     }
 
     bool doPlay(const QString& src, const QString& title, const QString& lrcPath, bool isUrl) {
@@ -354,7 +431,7 @@ private:
             return false;
         }
 
-        /* 强制停止当前播放，确保宿主能加载并切换新媒体（播放中直接 playAudio 不会换流） */
+        /* 强制停止当前播放，确保宿主能加载并切换新媒体 */
         SetPlayStateFn setState = (SetPlayStateFn)g_hook_api->querySymbol(kSetPlayState);
         if (setState) {
             int32_t stopped = 2; /* PlayState::STOPPED */
@@ -400,6 +477,19 @@ private:
     bool m_autoNext = false;
     QString m_quality;
     int m_rpcSeq = 0;
+    QTimer* m_timer = nullptr;
+    Step m_step = Step::Idle;
+    bool m_waitResp = false;
+    qint64 m_deadline = 0;
+    qint64 m_waitPlayingUntil = 0;
+    QString m_respPath;
+    int m_respId = 0;
+    QJsonObject m_currentSong;
+    QString m_currentTitle;
+    QString m_currentSource;
+    QString m_currentUrl;
+    QString m_currentLrc;
+    QString m_currentPath;
 };
 
 static LxPenPlayer* g_player = nullptr;
