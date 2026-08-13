@@ -19,7 +19,7 @@ Rectangle {
     readonly property string mpvSock:   "/tmp/lxpen.sock"
 
     /* ---------- 状态 ---------- */
-    property string page: "home"        // home | player | settings
+    property string page: "home"        // home | downloads | settings
     property string platform: "kw"
     property string keyword: ""
     property var searchResult: []
@@ -690,11 +690,21 @@ Rectangle {
         if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.resumeQueue && lxpenPlayer.isHostActive) {
             try { canResume = lxpenPlayer.isHostActive() } catch (e) { canResume = false }
         }
-        if (canResume && queue.length > 0 && queueIndex >= 0 && queueIndex < queue.length) {
+        // SO 会把后台连播后的真实索引写到 /tmp/lxpen_state.json（QML 保存的 queueIndex 可能过期）
+        var restoreIndex = queueIndex
+        var st = shell.exec("cat /tmp/lxpen_state.json 2>/dev/null; true").trim()
+        if (st) {
             try {
-                lxpenPlayer.resumeQueue(queue, queueIndex)
-                currentSong = queue[queueIndex]
-                pushLog("info", "已恢复播放上下文 idx=" + queueIndex)
+                var stObj = JSON.parse(st)
+                if (typeof stObj.index === "number" && stObj.index >= 0) restoreIndex = stObj.index
+            } catch (e) {}
+        }
+        if (canResume && queue.length > 0 && restoreIndex >= 0 && restoreIndex < queue.length) {
+            try {
+                lxpenPlayer.resumeQueue(queue, restoreIndex)
+                queueIndex = restoreIndex
+                currentSong = queue[restoreIndex]
+                pushLog("info", "已恢复播放上下文 idx=" + restoreIndex)
             } catch (e) { pushLog("warn", "恢复播放上下文失败") }
         }
         scanScripts()

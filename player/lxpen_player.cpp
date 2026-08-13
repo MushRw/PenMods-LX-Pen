@@ -183,6 +183,7 @@ public:
         m_playStartedAt = QDateTime::currentMSecsSinceEpoch();
         void* mpm = resolveTInstance(kYMediaPlayerManagerT);
         m_ourSeq = mpm ? currentAudioSeq(mpm) : 0;
+        persistIndex();
         soLog("resumeQueue idx=" + QString::number(index) + " ourSeq=" + QString::number(m_ourSeq));
     }
 
@@ -193,6 +194,7 @@ public:
         }
         cancelPlay();
         m_index = idx;
+        persistIndex();
         /* 切换中：任何 onSoundEnd 一律忽略，直到新歌真正开播（finishPlay 重置） */
         m_playStartedAt = 0;
         m_advanceHandled = false;
@@ -241,6 +243,7 @@ public:
         m_playStartedAt = 0;
         m_ourSeq = 0;
         m_advanceHandled = false;
+        QFile::remove(QStringLiteral("/tmp/lxpen_state.json"));
     }
 
     void handleSongEnded(uint32_t seq, uint32_t curEntry, int stateEntry) {
@@ -287,6 +290,7 @@ public:
         m_playStartedAt = 0;
         m_ourSeq = 0;
         m_advanceHandled = false;
+        QFile::remove(QStringLiteral("/tmp/lxpen_state.json"));
         cancelPlay();
     }
 
@@ -641,6 +645,17 @@ private:
         QFile f(QStringLiteral("/tmp/lxpen_so.log"));
         if (f.open(QIODevice::Append | QIODevice::WriteOnly)) {
             f.write(("[lxpen] " + msg + "\n").toUtf8());
+            f.close();
+        }
+    }
+
+    /* 持久化当前队列索引：页面关闭后 SO 被宿主重建，重开时用此文件恢复正确索引
+     * （后台自动连播会让 SO 索引前进，QML 持久化的 queueIndex 已过期） */
+    void persistIndex() {
+        QFile f(QStringLiteral("/tmp/lxpen_state.json"));
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            const QByteArray data = "{\"index\":" + QByteArray::number(m_index) + "}";
+            f.write(data);
             f.close();
         }
     }

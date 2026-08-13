@@ -63,6 +63,7 @@ Item {
     /* 下载按钮：下载到 /userdisk/music */
     Rectangle {
         id: dlBtn
+        z: 2 /* 必须盖过整行点击区域（area），否则点下载会触发播放 */
         width: 22; height: 22
         anchors.right: sourceText.left; anchors.rightMargin: 4
         anchors.verticalCenter: parent.verticalCenter
