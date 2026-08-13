@@ -202,6 +202,8 @@ public:
     }
 
     void handleNext() {
+        /* 播放开始 8 秒内宿主的 next 调用视为误触发（宿主误判结束自动切歌，与 SO 连播打架） */
+        if (m_playStartedAt > 0 && QDateTime::currentMSecsSinceEpoch() - m_playStartedAt < 8000) return;
         if (m_queue.size() == 0) return;
         int next = m_index + 1;
         if (next >= m_queue.size()) next = 0;
@@ -429,6 +431,8 @@ private:
     }
 
     bool doPlay(const QString& src, const QString& title, const QString& lrcPath, bool isUrl) {
+        /* 先持音频守护进程 MUSIC 锁，再触发播放（避免守护进程在播放开始后介入打断） */
+        holdMusicLock();
         if (!g_hook_api || !g_hook_api->querySymbol) {
             fprintf(stderr, "[lxpen] hook api missing\n");
             return false;
