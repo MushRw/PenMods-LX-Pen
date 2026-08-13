@@ -167,11 +167,17 @@ public:
     void handleSongEnded() {
         /* 手动停止（切歌/停止）时宿主也会发 onSoundEnd，此时非 PLAYING，忽略以免误触发连播 */
         void* mpm = resolveTInstance(kYMediaPlayerManagerT);
+        int state = -1;
         if (mpm && g_hook_api && g_hook_api->querySymbol) {
             typedef int (*PlayStateFn)(void*);
             PlayStateFn getState = (PlayStateFn)g_hook_api->querySymbol("_ZNK19YMediaPlayerManager9playStateEv");
-            if (getState && getState(mpm) != 0) return;
+            if (getState) state = getState(mpm);
+            if (getState && state != 0) return;
         }
+        qint64 sinceStart = QDateTime::currentMSecsSinceEpoch() - m_playStartedAt;
+        soLog("songEnded state=" + QString::number(state) + " sinceStart=" + QString::number(sinceStart) + "ms");
+        /* 播放开始 8 秒内的 onSoundEnd 视为误触发（宿主初始化/打断），忽略以免误切歌 */
+        if (m_playStartedAt > 0 && sinceStart < 8000) return;
         emit songEnded();
         if (m_autoNext && m_queue.size() > 0) {
             int next = m_index + 1;
@@ -261,6 +267,7 @@ private:
         m_step = Step::Idle;
         m_waitResp = false;
         m_timer->stop();
+        m_playStartedAt = QDateTime::currentMSecsSinceEpoch();
         emit songStarted(m_index);
     }
 
@@ -484,6 +491,7 @@ private:
     qint64 m_waitPlayingUntil = 0;
     QString m_respPath;
     int m_respId = 0;
+    qint64 m_playStartedAt = 0;
     QJsonObject m_currentSong;
     QString m_currentTitle;
     QString m_currentSource;

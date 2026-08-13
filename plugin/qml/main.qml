@@ -38,10 +38,10 @@ Rectangle {
     property var lyricData: null
 
     property string mpvPath: "/userdisk/mpv/mpv"
-    property string quality: "128k"
+    property string quality: "320k"
     property bool autoNext: false
     property var scriptList: []
-    property string selectedScript: "freelisten-source.js"
+    property string selectedScript: "lx-source.js"
     property var scriptSources: ({})
     property bool scriptReady: false
     property string scriptError: ""
@@ -112,7 +112,10 @@ Rectangle {
                 var rs = tx.executeSql("SELECT value FROM kv WHERE key='platform'")
                 if (rs.rows.length) platform = rs.rows.item(0).value
                 rs = tx.executeSql("SELECT value FROM kv WHERE key='quality'")
-                if (rs.rows.length) quality = rs.rows.item(0).value
+                if (rs.rows.length) {
+                    quality = rs.rows.item(0).value
+                    if (quality === "128k") quality = "320k"
+                }
                 rs = tx.executeSql("SELECT value FROM kv WHERE key='mpv'")
                 if (rs.rows.length) mpvPath = rs.rows.item(0).value
                 rs = tx.executeSql("SELECT value FROM kv WHERE key='autoNext'")
@@ -276,7 +279,7 @@ Rectangle {
                 if (scriptList[k].file === selectedScript) { ok = true; break }
             }
             if (!ok) {
-                selectedScript = "freelisten-source.js"
+                selectedScript = "lx-source.js"
                 saveSettings()
             }
         }
@@ -574,7 +577,7 @@ Rectangle {
         }
         shell.exec("echo 'scripts=" + scriptNames.join(",") + " selected=" + selectedScript + " found=" + scriptFound + "' >> /tmp/lxpen_qml.log")
         if (!scriptFound) {
-            selectedScript = "freelisten-source.js"
+            selectedScript = "lx-source.js"
             saveSettings()
             pushLog("warn", "音源脚本不存在，已重置为默认")
         }
