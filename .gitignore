@@ -1,17 +1,36 @@
 # 构建产物（CI / 本地生成，不入库）
 lx-music-port/dist/
 plugin/bin/penmusic
+plugin/liblxpen_player.so
 runner/penmusic-win*.exe
 runner/build_err*.txt
 runner/*.o
+runner/moc_*.cpp
 lx-pen.zip
-.release_new/
+dist/
+.qt-aarch64/
+
+# CI 产物下载目录
+.release*/
 
 # 系统 / 编辑器
 .DS_Store
 Thumbs.db
 .vscode/
 *.log
+*.err
+*.out
 
-# 临时探针
+# 调试/探针临时文件
 tests/probe*.js
+tests/deob*.js
+tests/*.mp3
+tests/sources/
+tests/sixyin*.js
+tests/ikun-*.js
+tests/lx-official.js
+tests/scan-sixyin.js
+tests/sha-*
+tests/win-e2e.js
+tests/win-sixyin.*
+tests/device-*.mp3
