@@ -61,7 +61,10 @@ Item {
             }
 
             MouseArea {
-                anchors.fill: parent
+                anchors.left: parent.left
+                anchors.right: clearBtn.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
                 onClicked: {
                     root.touchDebug("searchbox")
                     keyboard.open(root.keyword)
@@ -72,16 +75,18 @@ Item {
             Rectangle {
                 id: clearBtn
                 z: 2
-                width: 20; height: 20
-                anchors.right: parent.right; anchors.rightMargin: 5
+                width: 28; height: 28
+                anchors.right: parent.right; anchors.rightMargin: 0
                 anchors.verticalCenter: parent.verticalCenter
-                radius: 10
+                radius: 14
                 visible: root.keyword !== "" || root.searchResult.length > 0
-                color: clearArea.pressed ? Theme.cardHi : "transparent"
+                color: clearArea.pressed ? Theme.cardHi : Theme.bgAlt
+                border.color: Theme.line
+                border.width: 1
                 Text {
                     anchors.centerIn: parent
                     text: "×"
-                    color: Theme.textSub
+                    color: Theme.text
                     font.pixelSize: Theme.pxNormal
                     font.bold: true
                 }
