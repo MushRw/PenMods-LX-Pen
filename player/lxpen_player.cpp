@@ -162,6 +162,16 @@ public:
         return isPlaying() || isPaused();
     }
 
+    /* 清空队列：播放本地下载文件前调用，避免旧的搜索队列干扰下一首/连播 */
+    Q_INVOKABLE void clearQueue() {
+        m_queue = QJsonArray();
+        m_index = -1;
+        m_playStartedAt = 0;
+        m_ourSeq = 0;
+        m_advanceHandled = false;
+        m_playAfterCache = false;
+    }
+
     Q_INVOKABLE void playIndex(int idx) {
         if (idx < 0 || idx >= m_queue.size()) {
             emit playError(QStringLiteral("队列为空或索引越界"));
@@ -615,6 +625,9 @@ private:
     }
 
     bool doPlay(const QString& src, const QString& title, const QString& lrcPath, bool isUrl) {
+        /* 直接播放（playFile/playUrl）不经过 playIndex：复位计时，避免旧 sinceStart 误触发连播 */
+        m_playStartedAt = 0;
+        m_advanceHandled = false;
         /* 先持音频守护进程 MUSIC 锁，再触发播放（避免守护进程在播放开始后介入打断） */
         holdMusicLock();
         if (!g_hook_api || !g_hook_api->querySymbol) {
@@ -733,7 +746,7 @@ static void* onSoundEndDetour(void* self, uint32_t seq) {
 }
 
 static void* onClickedNextDetour(void* self, bool a2) {
-    if (g_player && g_player->isTakeover()) {
+    if (g_player && g_player->isTakeover() && g_player->isActive()) {
         g_player->handleNext();
         return nullptr;
     }
@@ -742,7 +755,7 @@ static void* onClickedNextDetour(void* self, bool a2) {
 }
 
 static void* onClickedPrevDetour(void* self, bool a2) {
-    if (g_player && g_player->isTakeover()) {
+    if (g_player && g_player->isTakeover() && g_player->isActive()) {
         g_player->handlePrev();
         return nullptr;
     }

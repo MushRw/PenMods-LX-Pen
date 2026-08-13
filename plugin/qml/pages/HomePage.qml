@@ -202,13 +202,13 @@ Item {
             anchors.bottomMargin: 4
             spacing: 2
 
-            Repeater {
-                model: [ { t: "热搜", toast: "热搜功能开发中" }, { t: "榜单", toast: "榜单功能开发中" }, { t: "歌单", toast: "歌单功能开发中" } ]
-                Rectangle {
-                    width: 48; height: 26
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    radius: Theme.radiusSmall
-                    color: area.pressed ? Theme.cardHi : Theme.card
+                Repeater {
+                    model: [ { t: "热搜", toast: "热搜功能开发中" }, { t: "榜单", toast: "榜单功能开发中" }, { t: "歌单", toast: "歌单功能开发中" } ]
+                    Rectangle {
+                        width: 48; height: 24
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        radius: Theme.radiusSmall
+                        color: area.pressed ? Theme.cardHi : Theme.card
                     border.color: Theme.line
                     border.width: 1
                     Text {
@@ -229,7 +229,30 @@ Item {
             }
 
             Rectangle {
-                width: 48; height: 26
+                width: 48; height: 24
+                anchors.horizontalCenter: parent.horizontalCenter
+                radius: Theme.radiusSmall
+                color: dlArea.pressed ? Theme.accentPressed : Theme.accent
+                border.color: Theme.accentBorder
+                border.width: 1
+                Text {
+                    anchors.centerIn: parent
+                    text: "下载"
+                    color: "#FFFFFF"
+                    font.pixelSize: Theme.pxSmall
+                }
+                MouseArea {
+                    id: dlArea
+                    anchors.fill: parent
+                    onClicked: {
+                        root.touchDebug("downloads")
+                        root.page = "downloads"
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 48; height: 24
                 anchors.horizontalCenter: parent.horizontalCenter
                 radius: Theme.radiusSmall
                 color: setArea.pressed ? Theme.accentPressed : Theme.accent
@@ -252,7 +275,7 @@ Item {
             }
 
             Rectangle {
-                width: 48; height: 26
+                width: 48; height: 24
                 anchors.horizontalCenter: parent.horizontalCenter
                 radius: Theme.radiusSmall
                 color: exitArea.pressed ? Theme.cardHi : Theme.card

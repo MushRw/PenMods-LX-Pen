@@ -143,6 +143,7 @@ globalThis.__lx_native_call__b64_to_bytes = enc.b64ToBytes;
 globalThis.__lx_native_call__bytes_to_b64 = enc.bytesToB64;
 globalThis.__lx_native_call__send = (e, d) => { /* lx.send */ };
 globalThis.__lx_native_call__log = (lv, s) => { if (process.env.LXPEN_DEBUG) console.log('[runner]', lv, s); };
+globalThis.__lx_native_call__download = (url, path) => 15;
 globalThis.__lx_native_call__file_write = () => true;
 globalThis.__lx_native_call__file_exists = () => true;
 globalThis.__lx_native_call__rpc_done = (id, json) => responses.push({ id, json: JSON.parse(json) });

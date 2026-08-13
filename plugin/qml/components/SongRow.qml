@@ -52,12 +52,39 @@ Item {
     Text {
         id: timeText
         width: 34
-        anchors.right: sourceText.left; anchors.rightMargin: 4
+        anchors.right: dlBtn.left; anchors.rightMargin: 4
         anchors.verticalCenter: parent.verticalCenter
         text: row.song ? row.song.interval : ""
         color: Theme.textSub
         font.pixelSize: Theme.pxTiny
         horizontalAlignment: Text.AlignRight
+    }
+
+    /* 下载按钮：下载到 /userdisk/music */
+    Rectangle {
+        id: dlBtn
+        width: 22; height: 22
+        anchors.right: sourceText.left; anchors.rightMargin: 4
+        anchors.verticalCenter: parent.verticalCenter
+        radius: 4
+        color: dlArea.pressed ? Theme.cardHi : Theme.card
+        border.color: Theme.line
+        border.width: 1
+        Text {
+            anchors.centerIn: parent
+            text: "↓"
+            color: Theme.accentBorder
+            font.pixelSize: Theme.pxSmall
+            font.bold: true
+        }
+        MouseArea {
+            id: dlArea
+            anchors.fill: parent
+            onClicked: {
+                mouse.accepted = true
+                root.downloadSong(row.song)
+            }
+        }
     }
 
     Text {

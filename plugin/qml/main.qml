@@ -39,6 +39,8 @@ Rectangle {
 
     property string mpvPath: "/userdisk/mpv/mpv"
     property string quality: "320k"
+    property var downloads: []
+    property bool downloading: false
     property var scriptList: []
     property string selectedScript: "lx-source.js"
     property var scriptSources: ({})
@@ -123,6 +125,10 @@ Rectangle {
                 if (rs.rows.length) {
                     try { searchHistory = JSON.parse(rs.rows.item(0).value) || [] } catch (e) { searchHistory = [] }
                 }
+                rs = tx.executeSql("SELECT value FROM kv WHERE key='downloads'")
+                if (rs.rows.length) {
+                    try { downloads = JSON.parse(rs.rows.item(0).value) || [] } catch (e) { downloads = [] }
+                }
             })
         } catch (e) { console.warn("loadSettings", e) }
     }
@@ -137,6 +143,7 @@ Rectangle {
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('mpv',?)", [mpvPath])
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('script',?)", [selectedScript])
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('history',?)", [JSON.stringify(searchHistory)])
+                tx.executeSql("INSERT OR REPLACE INTO kv VALUES('downloads',?)", [JSON.stringify(downloads)])
             })
         } catch (e) { console.warn("saveSettings", e) }
     }
@@ -402,6 +409,79 @@ Rectangle {
         saveSettings()
     }
 
+    /* ---------- 下载 ---------- */
+    function downloadSong(song) {
+        if (!song || !song.name) return
+        if (downloading) {
+            toast.show("正在下载其他歌曲", 2000)
+            return
+        }
+        downloading = true
+        toast.show("获取链接...", 1500)
+        rpcSend({ cmd: "script", source: song.source || platform, action: "musicUrl", info: { type: quality, musicInfo: song } }, function(res) {
+            if (!res.ok) {
+                downloading = false
+                toast.show("获取链接失败", 3000)
+                return
+            }
+            var dir = "/userdisk/music"
+            shell.exec("mkdir -p '" + dir + "'")
+            var safe = String(song.name).replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 40)
+            var safe2 = String(song.singer || "").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 20)
+            var path = dir + "/" + (safe || "song") + (safe2 ? "-" + safe2 : "") + ".mp3"
+            toast.show("下载中...", 1500)
+            rpcSend({ cmd: "download", url: res.data, path: path }, function(res2) {
+                downloading = false
+                if (res2.ok && res2.data && res2.data.size >= 102400) {
+                    addDownload({ name: song.name, singer: song.singer || "", path: path, size: res2.data.size, time: new Date().toISOString() })
+                    toast.show("已下载", 2000)
+                } else {
+                    shell.exec("rm -f '" + path + "'")
+                    toast.show("下载失败", 3000)
+                }
+            }, 90000)
+        }, 20000)
+    }
+
+    function addDownload(item) {
+        var list = downloads.slice()
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].path === item.path) { list.splice(i, 1); break }
+        }
+        list.unshift(item)
+        if (list.length > 50) list.length = 50
+        downloads = list
+        saveSettings()
+    }
+
+    function removeDownload(path) {
+        shell.exec("rm -f '" + path + "'")
+        var list = downloads.slice()
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].path === path) { list.splice(i, 1); break }
+        }
+        downloads = list
+        saveSettings()
+    }
+
+    function playDownload(item) {
+        if (!item || !item.path) return
+        var exists = shell.exec("test -f '" + item.path + "' && echo 1 || echo 0").trim()
+        if (exists !== "1") {
+            toast.show("文件不存在", 2000)
+            removeDownload(item.path)
+            return
+        }
+        if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.playFile) {
+            if (lxpenPlayer.clearQueue) {
+                try { lxpenPlayer.clearQueue() } catch (e) {}
+            }
+            lxpenPlayer.playFile(item.path, (item.name || "下载") + " - " + (item.singer || ""))
+        } else {
+            toast.show("播放组件不可用", 3000)
+        }
+    }
+
     function searchKeyword(kw) {
         if (!kw) return
         keyword = kw
@@ -529,6 +609,10 @@ Rectangle {
     HomePage {
         id: homePage
         visible: root.page === "home"
+    }
+
+    DownloadsPage {
+        visible: root.page === "downloads"
     }
 
     SettingsPage {
