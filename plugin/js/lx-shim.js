@@ -24,12 +24,37 @@ for (const __n of __nativeNames) {
   else native[__n] = () => { throw new Error('native ' + __n + ' unavailable'); };
 }
 
+/* 统一把 Array/类数组/Uint8Array 规整为 Uint8Array（sixyin 等音源常传普通字节数组） */
+function toU8(input) {
+  if (input instanceof Uint8Array) return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  if (Array.isArray(input)) return Uint8Array.from(input);
+  if (input && typeof input === 'object' && typeof input.length === 'number') return Uint8Array.from(input);
+  return null;
+}
 function strToBytes(str) { return native.str_to_bytes(String(str)); }
-function bytesToStr(bytes) { return native.bytes_to_str(bytes); }
+function bytesToStr(bytes) {
+  const u = toU8(bytes);
+  return native.bytes_to_str(u !== null ? u : bytes);
+}
 function strToB64(str) { return native.str_to_b64(String(str)); }
 function b64ToStr(b64) { return native.b64_to_str(String(b64)); }
-function b64ToBytes(b64) { return native.b64_to_bytes(String(b64)); }
-function bytesToB64(bytes) { return native.bytes_to_b64(bytes); }
+function b64ToBytes(b64) {
+  const r = native.b64_to_bytes(String(b64));
+  const u = toU8(r);
+  return u !== null ? u : r;
+}
+function bytesToB64(bytes) {
+  const u = toU8(bytes);
+  return native.bytes_to_b64(u !== null ? u : bytes);
+}
+function bytesToHex(bytes) {
+  const u = toU8(bytes);
+  let s = '';
+  const src = u !== null ? u : bytes;
+  for (let i = 0; i < src.length; i++) s += (src[i] < 16 ? '0' : '') + src[i].toString(16);
+  return s;
+}
 
 /* ---------------- timers ---------------- */
 const __timers = Object.create(null);
@@ -76,13 +101,31 @@ const consoleObj = {};
     native.log(lv, s);
   };
 });
+/* 兼容部分音源脚本（ikun 等）的分组日志调用 */
+consoleObj.group = consoleObj.groupEnd = consoleObj.groupCollapsed = () => {};
 globalThis.console = consoleObj;
 
 /* ---------------- lx object ---------------- */
 const lx = {};
 lx.version = '2.0.0';
-lx.env = 'pen';
-lx.currentScriptInfo = { name: '', description: '', version: '', author: '', homepage: '', rawScript: '' };
+/* 与 lx-music 桌面版一致：sixyin 等音源用 env 作为服务端 p 参数，'pen' 会导致鉴权失败 */
+lx.env = 'desktop';
+lx.currentScriptInfo = {
+  name: 'LX Pen source',
+  description: 'LX Pen custom music source',
+  version: '1.0.0',
+  author: '',
+  homepage: '',
+  rawScript: '',
+};
+/* runner 可在 eval 音源脚本前调用，用脚本头部注释解析出的元数据覆盖（sixyin 等校验这些字段） */
+globalThis.__lx_set_script_meta = (meta) => {
+  if (!meta || typeof meta !== 'object') return;
+  const info = lx.currentScriptInfo;
+  for (const k of ['name', 'description', 'version', 'author', 'homepage', 'rawScript']) {
+    if (typeof meta[k] === 'string') info[k] = meta[k];
+  }
+};
 lx.EVENT_NAMES = { request: 'request', inited: 'inited', updateAlert: 'updateAlert' };
 
 let __requestHandler = null;
@@ -188,13 +231,22 @@ globalThis.__lx_request_done = (id, errJson, respJson) => {
   }
   let resp = null;
   try { resp = JSON.parse(respJson); } catch (e) { p.reject(new Error('bad response')); return; }
-  if (p.binary && typeof resp.body === 'string') resp.body = b64ToBytes(resp.body);
+  /* 原版 lx preload（needle）返回 statusCode；penmusic C 层返回 status —— 兼容两者 */
+  if (resp.statusCode === undefined && resp.status !== undefined) resp.statusCode = resp.status;
+  if (resp.status === undefined && resp.statusCode !== undefined) resp.status = resp.statusCode;
+  if (p.binary) {
+    if (typeof resp.body === 'string') resp.body = b64ToBytes(resp.body);
+  } else if (typeof resp.body === 'string') {
+    /* 与 lx-music 原版 preload 一致：JSON 响应自动解析为对象（ikun 等音源依赖 body.code） */
+    try { resp.body = JSON.parse(resp.body); } catch (e) { /* 保留原始字符串 */ }
+  }
   p.resolve(resp);
 };
 
 /* ---------------- utils ---------------- */
 function bytesArg(v) {
-  if (v instanceof Uint8Array) return v;
+  const u = toU8(v);
+  if (u !== null) return u;
   if (v === undefined || v === null) return strToBytes('');
   return strToBytes(v);
 }
@@ -205,25 +257,36 @@ function hexToBytes(hex) {
   return out;
 }
 
-function bytesToHex(b) {
-  let s = '';
-  for (let i = 0; i < b.length; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16);
-  return s;
+function normBufFormat(format) {
+  format = String(format || 'utf8').toLowerCase();
+  if (format === 'utf-8') return 'utf8';
+  return format;
 }
 
 const buffer = {
   from(input, format) {
     if (input instanceof Uint8Array) return input.slice(0);
+    if (Array.isArray(input) || (input && typeof input === 'object' && typeof input.length === 'number')) {
+      return Uint8Array.from(input);
+    }
     if (typeof input !== 'string') throw new Error('buffer.from: unsupported input');
-    format = format || 'utf8';
+    format = normBufFormat(format);
     if (format === 'base64') return b64ToBytes(input);
     if (format === 'hex') return hexToBytes(input);
     if (format === 'utf8') return strToBytes(input);
     throw new Error('buffer.from: unsupported format ' + format);
   },
   bufToString(input, format) {
+    format = normBufFormat(format);
+    const u = toU8(input);
+    if (u !== null) input = u;
+    if (typeof input === 'string') {
+      /* 模拟原版 Buffer.from(buf, 'binary')：字符串按 latin1 转字节 */
+      const bytes = new Uint8Array(input.length);
+      for (let i = 0; i < input.length; i++) bytes[i] = input.charCodeAt(i) & 0xff;
+      input = bytes;
+    }
     if (!(input instanceof Uint8Array)) throw new Error('bufToString: expected Uint8Array');
-    format = format || 'utf8';
     if (format === 'base64') return bytesToB64(input);
     if (format === 'hex') return bytesToHex(input);
     if (format === 'utf8') return bytesToStr(input);

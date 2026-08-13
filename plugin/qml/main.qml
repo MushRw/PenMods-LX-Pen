@@ -41,7 +41,7 @@ Rectangle {
     property string quality: "128k"
     property bool autoNext: false
     property var scriptList: []
-    property string selectedScript: "example-kw-source.js"
+    property string selectedScript: "sixyin-source.js"
     property var scriptSources: ({})
     property bool scriptReady: false
     property string scriptError: ""

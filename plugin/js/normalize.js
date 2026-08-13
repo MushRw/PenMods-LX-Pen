@@ -13,6 +13,8 @@ function toPenMusicInfo(it) {
     name: it.name || '',
     singer: it.singer || '',
     source: it.source || '',
+    /* sixyin 等音源脚本从 musicInfo.platform 识别平台（与 source 同值） */
+    platform: it.platform || it.source || '',
     songmid: it.songmid !== undefined ? it.songmid : (it.songId !== undefined ? it.songId : ''),
     hash: it.hash || '',
     albumId: it.albumId || '',

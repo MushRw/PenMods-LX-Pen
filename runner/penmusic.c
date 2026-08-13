@@ -2358,6 +2358,61 @@ static int eval_file(JSContext *ctx, const char *path, int wrap_iife) {
     return 0;
 }
 
+/* 解析音源脚本头部注释元数据（@name/@description/@version/@author/@homepage），
+ * 在 eval 音源脚本前调用 lx-shim 的 __lx_set_script_meta。
+ * sixyin 等音源用这些字段做完整性校验（名字/描述/版本必须与脚本内置值一致）。 */
+static void set_script_meta_from_head(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    if (n == 0) return;
+    buf[n] = '\0';
+
+    static const char *keys[] = { "name", "description", "version", "author", "homepage" };
+    Dstr json;
+    dstr_init(&json);
+    dstr_appendz(&json, "__lx_set_script_meta({");
+    int first = 1;
+    for (size_t k = 0; k < sizeof keys / sizeof keys[0]; k++) {
+        char needle[32];
+        snprintf(needle, sizeof needle, "@%s", keys[k]);
+        const char *hit = strstr(buf, needle);
+        if (!hit) continue;
+        const char *p = hit + strlen(needle);
+        while (*p == ' ' || *p == '\t') p++;
+        const char *start = p;
+        while (*p && *p != '\n' && *p != '\r') p++;
+        const char *end = p;
+        while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '*')) end--;
+        if (end <= start) continue;
+        if (!first) dstr_appendz(&json, ",");
+        first = 0;
+        dstr_printf(&json, "\"%s\":\"", keys[k]);
+        for (const char *q = start; q < end; q++) {
+            if (*q == '"' || *q == '\\') dstr_appendc(&json, '\\');
+            dstr_appendc(&json, *q);
+        }
+        dstr_appendz(&json, "\"");
+    }
+    dstr_appendz(&json, "})");
+    if (first) {
+        dstr_free(&json);
+        return;
+    }
+    JSValue ret = JS_Eval(g_ctx, json.buf ? json.buf : "", json.len, "meta", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(ret)) {
+        JSValue ex = JS_GetException(g_ctx);
+        const char *s = JS_ToCString(g_ctx, ex);
+        logline("warn", s ? s : "set script meta failed");
+        if (s) JS_FreeCString(g_ctx, s);
+        JS_FreeValue(g_ctx, ex);
+    }
+    JS_FreeValue(g_ctx, ret);
+    dstr_free(&json);
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -2492,6 +2547,7 @@ int main(int argc, char **argv) {
 
     /* user script */
     logline("info", "loading source script");
+    set_script_meta_from_head(script);
     if (eval_file(g_ctx, script, 0) < 0) return 1;
 
     /* main loop */
