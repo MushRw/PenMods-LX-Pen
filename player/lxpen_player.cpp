@@ -99,6 +99,19 @@ static const char* kOnClickedNext = "_ZN19YMediaPlayerManager13onClickedNextEb";
 static const char* kOnClickedPrev = "_ZN19YMediaPlayerManager13onClickedPrevEb";
 
 static const char* kRunnerInFifo = "/tmp/lxpen_in";
+static const char* kMusicLockFile = "/tmp/audio_wakelocks/MUSIC.lock";
+
+/* 词典笔音频守护进程通过 /tmp/audio_wakelocks/<源>.lock 判断音频输出占用：
+ * MusicPlayer 播放前创建 MUSIC.lock（acquire），否则播放几秒会被守护进程打断。
+ * 插件播放时也要持有同一把锁。 */
+static void holdMusicLock() {
+    QDir().mkpath(QStringLiteral("/tmp/audio_wakelocks"));
+    QFile f(QString::fromLatin1(kMusicLockFile));
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.close();
+}
+static void releaseMusicLock() {
+    QFile::remove(QString::fromLatin1(kMusicLockFile));
+}
 
 /* ---------------- 播放器对象 ---------------- */
 
@@ -150,6 +163,7 @@ public:
     }
 
     Q_INVOKABLE void stop() {
+        releaseMusicLock();
         void* mpm = resolveTInstance(kYMediaPlayerManagerT);
         if (!mpm) return;
         if (g_hook_api && g_hook_api->querySymbol) {
@@ -474,6 +488,7 @@ private:
         showAudioPlayer(yglobal);
         if (setHasLrc) setHasLrc(mpm, !lrcPath.isEmpty());
         if (onClickedPlay) onClickedPlay(mpm);
+        holdMusicLock();
 
         entity->~YColumnMediaEntity();
         return true;
