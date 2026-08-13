@@ -8,6 +8,7 @@
 #include "PluginSDK.h"
 
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
