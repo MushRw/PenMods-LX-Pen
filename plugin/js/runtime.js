@@ -70,14 +70,10 @@ async function handleDownload(req) {
   const url = String(req.url || '');
   const path = String(req.path || '');
   if (!url || !path) throw new Error('empty url/path');
-  const resp = await I.request(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36' },
-    binary: true,
-    timeout: 120000,
-  });
-  if (resp.status !== 200) throw new Error('download http ' + resp.status);
-  if (!native.file_write(path, resp.body)) throw new Error('download write failed');
-  return { path, size: resp.body && resp.body.byteLength ? resp.body.byteLength : 0 };
+  /* 用系统 curl（busybox，2s 下完 5MB；libcurl 传输慢 30 倍） */
+  const size = native.download(url, path);
+  if (typeof size !== 'number' || size < 0) throw new Error('download failed');
+  return { path, size };
 }
 
 async function handlePic(req) {

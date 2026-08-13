@@ -16,7 +16,7 @@ const __nativeNames = [
   'zlib_inflate', 'zlib_deflate',
   'str_to_bytes', 'bytes_to_str', 'str_to_b64', 'b64_to_str',
   'b64_to_bytes', 'bytes_to_b64',
-  'send', 'log', 'file_write', 'file_exists', 'rpc_done',
+  'send', 'log', 'file_write', 'file_exists', 'download', 'rpc_done',
 ];
 for (const __n of __nativeNames) {
   const __fn = globalThis['__lx_native_call__' + __n];

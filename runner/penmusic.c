@@ -2190,6 +2190,43 @@ static JSValue js_file_write(JSContext *ctx, JSValueConst this_val, int argc, JS
     return JS_NewBool(ctx, ok);
 }
 
+/* 下载文件：用系统 curl（busybox curl 下载 5MB 约 2s，libcurl 慢 30 倍）。
+ * 返回文件字节数；失败返回 -1。 */
+static JSValue js_download(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val;
+    const char *url = argc > 0 ? JS_ToCString(ctx, argv[0]) : NULL;
+    const char *path = argc > 1 ? JS_ToCString(ctx, argv[1]) : NULL;
+    if (!url || !path) {
+        if (url) JS_FreeCString(ctx, url);
+        if (path) JS_FreeCString(ctx, path);
+        return JS_NewInt64(ctx, -1);
+    }
+    Dstr u, p;
+    dstr_init(&u);
+    dstr_init(&p);
+    for (const char *q = url; *q; q++) {
+        if (*q == '\'') dstr_appendz(&u, "'\\''");
+        else dstr_appendc(&u, *q);
+    }
+    for (const char *q = path; *q; q++) {
+        if (*q == '\'') dstr_appendz(&p, "'\\''");
+        else dstr_appendc(&p, *q);
+    }
+    char cmd[5200];
+    snprintf(cmd, sizeof cmd, "curl -sS -m 60 -o '%s' '%s' >/dev/null 2>&1; echo $?",
+             p.buf ? p.buf : "", u.buf ? u.buf : "");
+    dstr_free(&u);
+    dstr_free(&p);
+    int rc = system(cmd);
+    (void)rc;
+    struct stat st;
+    JSValue ret = JS_NewInt64(ctx, -1);
+    if (stat(path, &st) == 0 && st.st_size > 0) ret = JS_NewInt64(ctx, (int64_t)st.st_size);
+    JS_FreeCString(ctx, url);
+    JS_FreeCString(ctx, path);
+    return ret;
+}
+
 static JSValue js_file_exists(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     const char *path = JS_ToCString(ctx, argc > 0 ? argv[0] : JS_UNDEFINED);
@@ -2240,6 +2277,7 @@ static void register_natives(JSContext *ctx) {
         { "__lx_native_call__send", js_send, 2 },
         { "__lx_native_call__log", js_log, 2 },
         { "__lx_native_call__file_write", js_file_write, 2 },
+        { "__lx_native_call__download", js_download, 2 },
         { "__lx_native_call__file_exists", js_file_exists, 1 },
         { "__lx_native_call__rpc_done", js_rpc_done, 2 },
     };
