@@ -723,7 +723,29 @@ static void req_done(HttpReq *r, int curl_ok, int curl_code, const char *force_e
             char *k = line;
             char *v = colon + 1;
             while (*v == ' ') v++;
-            JS_SetPropertyStr(ctx, hdrs, k, js_str(ctx, v));
+            /* header 名转小写（与 Node/needle 一致，音源脚本读取 headers['set-cookie'] 等） */
+            for (char *p = k; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 32;
+            /* 同名 header（如多个 Set-Cookie）合并为数组 */
+            JSValue existing = JS_GetPropertyStr(ctx, hdrs, k);
+            if (!JS_IsUndefined(existing)) {
+                JSValue lenv = JS_GetPropertyStr(ctx, existing, "length");
+                if (JS_IsNumber(lenv)) {
+                    uint32_t len = 0;
+                    JS_ToUint32(ctx, &len, lenv);
+                    JS_FreeValue(ctx, lenv);
+                    JS_SetPropertyUint32(ctx, existing, len, js_str(ctx, v));
+                } else {
+                    JS_FreeValue(ctx, lenv);
+                    JSValue arr = JS_NewArray(ctx);
+                    JS_SetPropertyUint32(ctx, arr, 0, existing);
+                    JS_SetPropertyUint32(ctx, arr, 1, js_str(ctx, v));
+                    JS_SetPropertyStr(ctx, hdrs, k, arr);
+                    JS_FreeValue(ctx, arr);
+                }
+            } else {
+                JS_SetPropertyStr(ctx, hdrs, k, js_str(ctx, v));
+            }
+            JS_FreeValue(ctx, existing);
             *colon = ':';
         }
         line = strtok_r(NULL, "\n", &save);

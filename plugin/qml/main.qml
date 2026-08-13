@@ -41,7 +41,7 @@ Rectangle {
     property string quality: "128k"
     property bool autoNext: false
     property var scriptList: []
-    property string selectedScript: "sixyin-source.js"
+    property string selectedScript: "freelisten-source.js"
     property var scriptSources: ({})
     property bool scriptReady: false
     property string scriptError: ""
@@ -269,6 +269,17 @@ Rectangle {
     }
 
     function startFreshRunner() {
+        // 音源脚本不存在时回退默认（防止旧设置引用已删脚本导致 runner 起不来）
+        if (scriptList.length > 0) {
+            var ok = false
+            for (var k = 0; k < scriptList.length; k++) {
+                if (scriptList[k].file === selectedScript) { ok = true; break }
+            }
+            if (!ok) {
+                selectedScript = "freelisten-source.js"
+                saveSettings()
+            }
+        }
         // 全新启动（先确保无残留 runner）；注意 busybox pkill/pgrep 不支持 -x，
         // 且不能用 -f（会匹配到执行命令的 shell 自身导致自杀），用普通 pkill 按进程名匹配
         // 词典笔缺 gconv 模块，先铺 GB18030 到 /tmp/gconv 并设 GCONV_PATH（否则 kw 歌词 iconv 失败）
@@ -554,6 +565,19 @@ Rectangle {
     Component.onCompleted: {
         loadSettings()
         scanScripts()
+        // 设置的音源脚本不存在时回退默认（防止旧设置/被删脚本导致 runner 用错音源）
+        var scriptFound = false
+        var scriptNames = []
+        for (var si = 0; si < scriptList.length; si++) {
+            scriptNames.push(scriptList[si].file)
+            if (scriptList[si].file === selectedScript) { scriptFound = true; break }
+        }
+        shell.exec("echo 'scripts=" + scriptNames.join(",") + " selected=" + selectedScript + " found=" + scriptFound + "' >> /tmp/lxpen_qml.log")
+        if (!scriptFound) {
+            selectedScript = "freelisten-source.js"
+            saveSettings()
+            pushLog("warn", "音源脚本不存在，已重置为默认")
+        }
         startRunner()
         // 把自动连播设置同步给常驻 SO（回主页后连播逻辑由 SO 承担）
         if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setAutoNext) {

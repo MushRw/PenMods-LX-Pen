@@ -194,6 +194,7 @@ lx.request = (url, options, callback) => {
   if (!method) method = 'GET';
 
   const reqId = ++__reqSeq;
+  native.log('debug', 'REQ ' + reqId + ' ' + method + ' ' + url);
   const opts = {
     method,
     headers,
@@ -234,6 +235,7 @@ globalThis.__lx_request_done = (id, errJson, respJson) => {
   /* 原版 lx preload（needle）返回 statusCode；penmusic C 层返回 status —— 兼容两者 */
   if (resp.statusCode === undefined && resp.status !== undefined) resp.statusCode = resp.status;
   if (resp.status === undefined && resp.statusCode !== undefined) resp.status = resp.statusCode;
+  native.log('debug', 'DONE ' + id + ' status=' + resp.status + ' body=' + String(typeof resp.body === 'string' ? resp.body : JSON.stringify(resp.body)).slice(0, 200));
   if (p.binary) {
     if (typeof resp.body === 'string') resp.body = b64ToBytes(resp.body);
   } else if (typeof resp.body === 'string') {
@@ -297,8 +299,8 @@ const buffer = {
 const crypto = {
   aesEncrypt(input, mode, key, iv) {
     let m;
-    if (mode === 'AES/CBC/PKCS7Padding') m = 'cbc';
-    else if (mode === 'AES') m = 'ecb';
+    if (mode === 'AES/CBC/PKCS7Padding' || mode === 'aes-128-cbc') m = 'cbc';
+    else if (mode === 'AES' || mode === 'aes-128-ecb') m = 'ecb';
     else if (mode === 'cbc' || mode === 'ecb') m = mode;
     else throw new Error('aesEncrypt: unsupported mode ' + mode);
     return native.aes_encrypt(bytesArg(input), m, bytesArg(key), bytesArg(iv));

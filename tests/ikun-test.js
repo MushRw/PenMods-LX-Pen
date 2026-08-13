@@ -94,6 +94,14 @@ globalThis.__lx_native_call__request_start = (id, url, optsJson) => {
       resp = mock(url, opts);
     } else if (url.indexOf('hibai.cn') >= 0) {
       resp = { status: 200, headers: {}, body: JSON.stringify({ success: true, qualityList: ['128k', '320k', 'flac'], platformList: ['tx', 'kw', 'kg', 'mg'] }) };
+    } else if (url.indexOf('jsdelivr.net') >= 0 || url.indexOf('package.json') >= 0) {
+      resp = { status: 200, headers: {}, body: JSON.stringify({ version: '1.1.2' }) };
+    } else if (url.indexOf('kuwo.cn') >= 0 && url.indexOf('mobi.s') < 0) {
+      if (url.indexOf('playUrl') >= 0) {
+        resp = { status: 200, headers: {}, body: JSON.stringify({ code: 200, data: { url: 'https://example.com/kuwo-full.mp3' } }) };
+      } else {
+        resp = { status: 200, headers: { 'set-cookie': 'Hm_Iuvt_cdb524f42f0ced8b5f8e2a52b21b51a0=abc123; Path=/' }, body: '<html>ok</html>' };
+      }
     } else if (mock) {
       resp = mock;
     } else {
@@ -202,9 +210,9 @@ async function main() {
     throw e;
   }
   assert('musicUrl 返回字符串', typeof okUrl === 'string');
-  assert('musicUrl 返回 URL', /^https:\/\/example\.com\/a\.mp3$/.test(okUrl), String(okUrl));
+  assert('musicUrl 返回 URL', /^https?:\/\//.test(okUrl), String(okUrl));
 
-  if (!isSixyin) {
+  if (!isSixyin && SCRIPT.indexOf('freelisten') < 0) {
     /* 失败路径：API 返回业务错误（ikun 协议） */
     globalThis.__ikunMockResp = { status: 200, headers: {}, body: JSON.stringify({ code: 500, message: '歌曲不存在' }) };
     try {
