@@ -62,7 +62,8 @@ Item {
 
             MouseArea {
                 anchors.left: parent.left
-                anchors.right: clearBtn.left
+                /* 叉可见时点击区止于叉左缘；叉隐藏时整框可点（避免右侧留死角） */
+                anchors.right: clearBtn.visible ? clearBtn.left : parent.right
                 anchors.top: parent.top
                 anchors.bottom: parent.bottom
                 onClicked: {
