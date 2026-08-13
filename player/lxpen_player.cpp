@@ -457,15 +457,6 @@ private:
             return false;
         }
 
-        /* 强制停止当前播放，确保宿主能加载并切换新媒体 */
-        SetPlayStateFn setState = (SetPlayStateFn)g_hook_api->querySymbol(kSetPlayState);
-        if (setState) {
-            int32_t stopped = 2; /* PlayState::STOPPED */
-            setState(mpm, &stopped);
-        }
-        VoidFn pause = (VoidFn)g_hook_api->querySymbol(kOnClickedPause);
-        if (pause) pause(mpm);
-
         char mem[sizeof(YColumnMediaEntity)];
         std::memset(mem, 0, sizeof mem);
         YColumnMediaEntity* entity = reinterpret_cast<YColumnMediaEntity*>(mem);
@@ -491,11 +482,14 @@ private:
         }
         playAudio(ymedia, entity, true);
         showAudioPlayer(yglobal);
-        if (setHasLrc) setHasLrc(mpm, !lrcPath.isEmpty());
-        if (onClickedPlay) onClickedPlay(mpm);
-        holdMusicLock();
 
         entity->~YColumnMediaEntity();
+
+        /* 对齐 MusicPlayer：仅当宿主未进入 PLAYING 才手动触发播放与 LRC（避免重复触发导致中断） */
+        if (!isPlaying()) {
+            if (onClickedPlay) onClickedPlay(mpm);
+            if (setHasLrc) setHasLrc(mpm, !lrcPath.isEmpty());
+        }
         return true;
     }
 
