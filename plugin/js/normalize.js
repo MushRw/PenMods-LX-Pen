@@ -16,7 +16,8 @@ function toPenMusicInfo(it) {
     /* sixyin 等音源脚本从 musicInfo.platform 识别平台（与 source 同值） */
     platform: it.platform || it.source || '',
     songmid: it.songmid !== undefined ? it.songmid : (it.songId !== undefined ? it.songId : ''),
-    hash: it.hash || '',
+    /* 空 hash 置 null：lx 音源等用 hash ?? songmid 取 ID，'' 会阻断回退导致 404 */
+    hash: it.hash || null,
     albumId: it.albumId || '',
     albumName: it.albumName || '',
     interval: typeof it.interval === 'number' ? fmtPlayTime(it.interval) : (it.interval || ''),

@@ -227,6 +227,7 @@ globalThis.__lx_request_done = (id, errJson, respJson) => {
   if (errJson) {
     let msg = 'request failed';
     try { msg = JSON.parse(errJson).message || msg; } catch (e) { /* ignore */ }
+    native.log('debug', 'REQERR ' + id + ' ' + msg);
     p.reject(new Error(msg));
     return;
   }

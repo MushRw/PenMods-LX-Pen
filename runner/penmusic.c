@@ -770,6 +770,11 @@ static void req_done(HttpReq *r, int curl_ok, int curl_code, const char *force_e
         errv = js_str(ctx, ebuf);
     } else if (!curl_ok) {
         const char *es = C.h ? C.easy_strerror(curl_code) : "request failed";
+        {
+            char eb[192];
+            snprintf(eb, sizeof eb, "curl error id=%d code=%d msg=%s", r->id, curl_code, es ? es : "?");
+            logline("error", eb);
+        }
         char ebuf[256];
         snprintf(ebuf, sizeof ebuf, "{\"message\":\"%s\"}", es ? es : "curl error");
         errv = js_str(ctx, ebuf);
@@ -1743,7 +1748,9 @@ static JSValue js_request_start(JSContext *ctx, JSValueConst this_val, int argc,
     C.easy_setopt(r->easy, CURLOPT_MAXREDIRS, 5L);
     C.easy_setopt(r->easy, CURLOPT_NOSIGNAL, 1L);
     C.easy_setopt(r->easy, CURLOPT_TIMEOUT_MS, (long)timeout);
-    C.easy_setopt(r->easy, CURLOPT_ACCEPT_ENCODING, "");
+    /* binary（音频下载等）不请求 gzip：部分 CDN 对 Accept-Encoding:gzip 返回压缩流，
+     * 词典笔 libcurl 解压 5MB 音频异常导致下载失败（WinHTTP 无此问题） */
+    if (!r->binary) C.easy_setopt(r->easy, CURLOPT_ACCEPT_ENCODING, "");
     if (access("/etc/ssl/certs/ca-certificates.crt", R_OK) == 0) {
         C.easy_setopt(r->easy, CURLOPT_SSL_VERIFYPEER, 1L);
         C.easy_setopt(r->easy, CURLOPT_SSL_VERIFYHOST, 2L);
