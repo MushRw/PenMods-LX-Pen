@@ -441,7 +441,7 @@ Rectangle {
                 toast.show("获取链接失败", 3000)
                 return
             }
-            var dir = "/userdisk/Music"
+            var dir = "/userdisk/Music/LX-Pen"
             shell.exec("mkdir -p '" + dir + "'")
             var safe = String(song.name).replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 40)
             var safe2 = String(song.singer || "").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 20)
