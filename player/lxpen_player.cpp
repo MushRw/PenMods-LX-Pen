@@ -97,11 +97,22 @@ static const char* kWipeData = "_ZN19YMediaPlayerManager8wipeDataEv";
 static const char* kSetPlayState = "_ZN19YMediaPlayerManager12setPlayStateERKN12YEnumWrapper10Play_StateE";
 static const char* kEntityCtor = "_ZN18YColumnMediaEntityC2EP7QObject";
 static const char* kOnSoundEnd = "_ZN19YMediaPlayerManager10onSoundEndEj";
+static const char* kOnClickedNext = "_ZN19YMediaPlayerManager13onClickedNextEb";
+static const char* kOnClickedPrev = "_ZN19YMediaPlayerManager13onClickedPrevEb";
 
 static const char* kRunnerInFifo = "/tmp/lxpen_in";
 static const char* kMusicLockFile = "/tmp/audio_wakelocks/MUSIC.lock";
 static const char* kCacheDir = "/tmp/lxpen_cache";
 static const int kCacheMaxFiles = 10;
+
+/* 读取宿主 YMediaPlayerManager 当前音频会话序号（对齐 MusicPlayer 的判断：
+ * self+0x20 指向内部对象，其 +0x64 处为当前会话 seq）。 */
+static uint32_t currentAudioSeq(void* self) {
+    if (!self) return 0;
+    uintptr_t inner = *(uintptr_t*)((char*)self + 32);
+    if (!inner) return 0;
+    return *(uint32_t*)(inner + 100);
+}
 
 /* 词典笔音频守护进程通过 /tmp/audio_wakelocks/<源>.lock 判断音频输出占用：
  * MusicPlayer 播放前创建 MUSIC.lock（acquire），否则播放几秒会被守护进程打断。
@@ -142,6 +153,9 @@ public:
         }
         cancelPlay();
         m_index = idx;
+        /* 切换中：任何 onSoundEnd 一律忽略，直到新歌真正开播（finishPlay 重置） */
+        m_playStartedAt = 0;
+        m_advanceHandled = false;
         m_playAfterCache = false;
         m_currentSong = m_queue.at(idx).toObject();
         m_currentTitle = m_currentSong.value(QStringLiteral("name")).toString() + QStringLiteral(" - ") +
@@ -182,7 +196,7 @@ public:
         cancelPlay();
     }
 
-    void handleSongEnded() {
+    void handleSongEnded(void* self, uint32_t seq) {
         /* 手动停止（切歌/停止）时宿主也会发 onSoundEnd，此时非 PLAYING，忽略以免误触发连播 */
         void* mpm = resolveTInstance(kYMediaPlayerManagerT);
         int state = -1;
@@ -190,13 +204,46 @@ public:
             typedef int (*PlayStateFn)(void*);
             PlayStateFn getState = (PlayStateFn)g_hook_api->querySymbol("_ZNK19YMediaPlayerManager9playStateEv");
             if (getState) state = getState(mpm);
-            if (getState && state != 0) return;
         }
         qint64 sinceStart = QDateTime::currentMSecsSinceEpoch() - m_playStartedAt;
-        soLog("songEnded state=" + QString::number(state) + " sinceStart=" + QString::number(sinceStart) + "ms");
+        const uint32_t curSeq = currentAudioSeq(self);
+        soLog("songEnded seq=" + QString::number(seq) + " cur=" + QString::number(curSeq) +
+              " state=" + QString::number(state) + " sinceStart=" + QString::number(sinceStart) + "ms");
+        if (m_playStartedAt <= 0) return; /* 切换中/未开播，忽略 */
+        if (state != 0) return;           /* 非 PLAYING：手动停止/暂停触发，不连播 */
+        if (curSeq != seq) return;        /* 旧音频会话的结束事件（宿主初始化/切歌残留），忽略 */
         /* 播放开始 8 秒内的 onSoundEnd 视为误触发（宿主初始化/打断），忽略以免误切歌 */
-        if (m_playStartedAt > 0 && sinceStart < 8000) return;
+        if (sinceStart < 8000) return;
+        if (m_queue.size() == 0 || m_index < 0) return;
+        /* 宿主自身 onSoundEnd 已通过 onClickedNext 推进过队列，避免二次推进 */
+        if (m_advanceHandled) { m_advanceHandled = false; return; }
+        int next = m_index + 1;
+        if (next >= m_queue.size()) next = 0;
+        soLog("auto next idx=" + QString::number(next));
+        playIndex(next);
         emit songEnded();
+    }
+
+    /* 手动/宿主"下一首"：经宿主播放器 onClickedNext 同一路径推进队列。
+     * 3 秒内视为宿主初始化误触发（实测误判约 0.8~1.9s），忽略以免连环跳歌。 */
+    void handleNext() {
+        if (m_queue.size() == 0) return;
+        if (m_playStartedAt > 0 && QDateTime::currentMSecsSinceEpoch() - m_playStartedAt < 3000) {
+            soLog("next ignored (within 3s of play start)");
+            return;
+        }
+        int next = m_index + 1;
+        if (next >= m_queue.size()) next = 0;
+        m_advanceHandled = true;
+        playIndex(next);
+    }
+
+    void handlePrev() {
+        if (m_queue.size() == 0) return;
+        int prev = m_index - 1;
+        if (prev < 0) prev = m_queue.size() - 1;
+        m_advanceHandled = true;
+        playIndex(prev);
     }
 
     bool isActive() const { return m_queue.size() > 0; }
@@ -335,6 +382,7 @@ private:
         m_waitResp = false;
         m_timer->stop();
         m_playStartedAt = QDateTime::currentMSecsSinceEpoch();
+        m_advanceHandled = false;
         emit songStarted(m_index);
     }
 
@@ -588,14 +636,36 @@ private:
     QString m_currentUrl;
     QString m_currentLrc;
     QString m_currentPath;
+    bool m_advanceHandled = false;
 };
 
 static LxPenPlayer* g_player = nullptr;
 static OnSoundEndFn g_origOnSoundEnd = nullptr;
+static void* (*g_origOnClickedNext)(void*, bool) = nullptr;
+static void* (*g_origOnClickedPrev)(void*, bool) = nullptr;
+
 static void* onSoundEndDetour(void* self, uint32_t seq) {
     if (g_origOnSoundEnd) g_origOnSoundEnd(self, seq);
-    if (g_player) g_player->handleSongEnded();
+    if (g_player) g_player->handleSongEnded(self, seq);
     return self;
+}
+
+static void* onClickedNextDetour(void* self, bool a2) {
+    if (g_player && g_player->isActive()) {
+        g_player->handleNext();
+        return nullptr;
+    }
+    if (g_origOnClickedNext) return g_origOnClickedNext(self, a2);
+    return nullptr;
+}
+
+static void* onClickedPrevDetour(void* self, bool a2) {
+    if (g_player && g_player->isActive()) {
+        g_player->handlePrev();
+        return nullptr;
+    }
+    if (g_origOnClickedPrev) return g_origOnClickedPrev(self, a2);
+    return nullptr;
 }
 
 extern "C" {
@@ -610,6 +680,10 @@ void init_plugin_with_hook_api(PluginHookAPI* api) {
     if (g_hook_api && g_hook_api->querySymbol && g_hook_api->hookFunction) {
         void* addr = g_hook_api->querySymbol(kOnSoundEnd);
         if (addr) g_hook_api->hookFunction(addr, (void*)onSoundEndDetour, (void**)&g_origOnSoundEnd);
+        void* addrNext = g_hook_api->querySymbol(kOnClickedNext);
+        if (addrNext) g_hook_api->hookFunction(addrNext, (void*)onClickedNextDetour, (void**)&g_origOnClickedNext);
+        void* addrPrev = g_hook_api->querySymbol(kOnClickedPrev);
+        if (addrPrev) g_hook_api->hookFunction(addrPrev, (void*)onClickedPrevDetour, (void**)&g_origOnClickedPrev);
     }
 }
 

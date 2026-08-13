@@ -105,16 +105,6 @@ Item {
                     width: (parent.parent.width - 8) / 2
                     height: 30
                     radius: Theme.radiusSmall
-                    color: autoArea.pressed ? Theme.cardHi : Theme.card
-                    border.color: Theme.line
-                    border.width: 1
-                    
-                }
-
-                Rectangle {
-                    width: (parent.parent.width - 8) / 2
-                    height: 30
-                    radius: Theme.radiusSmall
                     color: restartArea.pressed ? Theme.accentPressed : Theme.accent
                     border.color: Theme.accentBorder
                     border.width: 1

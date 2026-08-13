@@ -32,9 +32,15 @@ function adb(cmd) { return execSync('adb shell ' + JSON.stringify(cmd), { encodi
   const dp = '/tmp/lxp_d.json';
   adb('rm -f ' + dp + ' /tmp/lxp_dl.mp3');
   const db64 = Buffer.from(JSON.stringify({ id: 3, respPath: dp, cmd: 'download', url, path: '/tmp/lxp_dl.mp3' }), 'utf8').toString('base64');
+  const t0 = Date.now();
   adb('echo ' + db64 + ' | base64 -d > ' + inF + '; echo > ' + inF);
-  await sleep(65000);
-  console.log('download:', adb('cat ' + dp + ' 2>/dev/null').slice(0, 100));
+  let resp = '';
+  for (let i = 0; i < 60; i++) {
+    await sleep(2000);
+    resp = adb('cat ' + dp + ' 2>/dev/null').trim();
+    if (resp) break;
+  }
+  console.log('download (' + ((Date.now() - t0) / 1000).toFixed(1) + 's):', resp.slice(0, 100));
   console.log('file:', adb('ls -la /tmp/lxp_dl.mp3 2>/dev/null'));
   adb('pkill -9 -f "bin/penmusic"; rm -f /tmp/lxp_in /tmp/lxp_out /tmp/lxp_*.json /tmp/lxp_dl.mp3; true');
   process.exit(0);

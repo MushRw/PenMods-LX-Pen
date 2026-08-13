@@ -30,7 +30,7 @@ function testSource(name, scriptRel) {
           console.log(name, 'INITED', Object.keys(msg.data.sources).join(','));
           const reqId = ++seq;
           pending.set(String(reqId), { resolve: () => {} });
-          child.stdin.write(JSON.stringify({ id: reqId, cmd: 'script', source: 'kw', action: 'musicUrl', info: { type: '128k', musicInfo: { songmid: '397242799' } } }) + '\n');
+          child.stdin.write(JSON.stringify({ id: reqId, respPath: '/tmp/win_dl.json', cmd: 'download', url: 'http://car-er.kuwo.cn/b0625fa45bedbc1d4999339d2091a226/6a7db39b/resource/30106/trackmedia/M500003hHrGg3UTast.mp3', path: 'C:/temp/lxp_dl.mp3' }) + '\n');
           setTimeout(() => {
             if (pending.has(String(reqId))) { pending.delete(String(reqId)); console.log(name, '=> musicUrl TIMEOUT'); cleanup(); }
           }, 55000);
