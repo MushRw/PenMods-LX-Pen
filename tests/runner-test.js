@@ -16,6 +16,7 @@ const ROOT = path.resolve(__dirname, '..');
 const NodeBuffer = Buffer;
 /* lx-shim 会替换 console，测试输出固定用原始 console */
 const origConsole = console;
+const origExit = process.exit.bind(process);
 /* lx-shim 会替换 globalThis.setTimeout，原生 mock 必须用原始版本 */
 const nodeSetTimeout = setTimeout;
 const nodeClearTimeout = clearTimeout;
@@ -240,5 +241,5 @@ async function main() {
 
 main().catch(e => {
   origConsole.error('runner test error:', e && e.stack ? e.stack : e);
-  process.exit(1);
+  origExit(1);
 });

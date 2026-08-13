@@ -13,18 +13,19 @@ const nodeCrypto = require('crypto');
 const ROOT = path.resolve(__dirname, '..');
 const SCRIPT = process.argv[2] || 'plugin/scripts/ikun-source.js';
 const origConsole = console;
+const origExit = process.exit.bind(process);
 const nodeSetTimeout = setTimeout;
 const nodeClearTimeout = clearTimeout;
 
 const enc = {
-  strToBytes: s => Uint8Array.from(Buffer.from(String(s), 'utf8')),
-  bytesToStr: b => Buffer.from(b).toString('utf8'),
-  strToB64: s => Buffer.from(String(s), 'utf8').toString('base64'),
-  b64ToStr: s => Buffer.from(String(s), 'base64').toString('utf8'),
-  b64ToBytes: s => Uint8Array.from(Buffer.from(String(s), 'base64')),
-  bytesToB64: b => Buffer.from(b).toString('base64'),
-  bytesToHex: b => Buffer.from(b).toString('hex'),
-  hexToBytes: s => Uint8Array.from(Buffer.from(String(s), 'hex')),
+  strToBytes: s => Uint8Array.from(NodeBuffer.from(String(s), 'utf8')),
+  bytesToStr: b => NodeBuffer.from(b).toString('utf8'),
+  strToB64: s => NodeBuffer.from(String(s), 'utf8').toString('base64'),
+  b64ToStr: s => NodeBuffer.from(String(s), 'base64').toString('utf8'),
+  b64ToBytes: s => Uint8Array.from(NodeBuffer.from(String(s), 'base64')),
+  bytesToB64: b => NodeBuffer.from(b).toString('base64'),
+  bytesToHex: b => NodeBuffer.from(b).toString('hex'),
+  hexToBytes: s => Uint8Array.from(NodeBuffer.from(String(s), 'hex')),
 };
 enc.native = {};
 globalThis.__lxinternal = enc;
@@ -102,6 +103,11 @@ globalThis.__lx_native_call__request_start = (id, url, optsJson) => {
       } else {
         resp = { status: 200, headers: { 'set-cookie': 'Hm_Iuvt_cdb524f42f0ced8b5f8e2a52b21b51a0=abc123; Path=/' }, body: '<html>ok</html>' };
       }
+    } else if (url.indexOf('flower-source-info') >= 0 || url.indexOf('grass-source-info') >= 0) {
+      const isFlower = url.indexOf('flower') >= 0;
+      resp = { status: 200, headers: {}, body: JSON.stringify(isFlower
+        ? { vinfo: { '1': { s: 'kw|128k&wy|128k&mg|128k&tx|128k&kg|128k', m: '9ee1b5749b81220180c9978530f8ad2e' }, lv: '1' } }
+        : { vinfo: { '1': { s: 'kw|128k', m: 'a58de3be76df7ebe45a46e940ad0e362' }, lv: '1' } }) };
     } else if (mock) {
       resp = mock;
     } else {
@@ -245,7 +251,7 @@ async function main() {
 
   origConsole.log('----');
   origConsole.log('结果: ' + pass + ' 通过, ' + fail + ' 失败');
-  process.exit(fail ? 1 : 0);
+  origExit(fail ? 1 : 0);
 }
 
-main().catch(e => { origConsole.error('FATAL', e); process.exit(1); });
+main().catch(e => { origConsole.error('FATAL', e); origExit(1); });

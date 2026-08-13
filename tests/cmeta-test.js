@@ -9,7 +9,7 @@ const ROOT = 'E:/code/youdao/lx-pen';
 /* 模拟 C 层解析：从脚本头提取 @name/@description/@version */
 function parseMetaFromHead(file) {
   const buf = fs.readFileSync(file, 'utf8');
-  const out = {};
+  const out = { rawScript: buf };
   for (const key of ['name', 'description', 'version', 'author', 'homepage']) {
     const re = new RegExp('@' + key + '\\s+([^\\n\\r*]+)');
     const m = buf.match(re);
@@ -64,11 +64,11 @@ for (const n of Object.keys(alias)) sandbox['__lx_native_call__' + n] = a => ali
 
 try {
   vm.runInContext(fs.readFileSync(ROOT + '/plugin/js/lx-shim.js', 'utf8'), sandbox);
-  const meta = parseMetaFromHead(ROOT + '/plugin/scripts/sixyin-source.js');
+  const meta = parseMetaFromHead(process.env.SCRIPT || ROOT + '/plugin/scripts/sixyin-source.js');
   console.log('parsed meta:', JSON.stringify(meta));
   sandbox.__lx_set_script_meta(meta);
   console.log('env =', sandbox.lx.env);
-  vm.runInContext(fs.readFileSync(ROOT + '/plugin/scripts/sixyin-source.js', 'utf8'), sandbox);
+  vm.runInContext(fs.readFileSync(process.env.SCRIPT || ROOT + '/plugin/scripts/sixyin-source.js', 'utf8'), sandbox);
   console.log('sixyin loaded OK (sync)');
   setTimeout(() => { console.log('done, no crash'); process.exit(0); }, 1500);
 } catch (e) {

@@ -2380,17 +2380,48 @@ static int eval_file(JSContext *ctx, const char *path, int wrap_iife) {
     return 0;
 }
 
+/* JSON 字符串转义（元数据/rawScript 含换行等控制字符时必须转义，否则 __lx_set_script_meta 语法错误） */
+static void json_escape_append(Dstr *out, const char *s, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        switch (c) {
+            case '"': dstr_appendz(out, "\\\""); break;
+            case '\\': dstr_appendz(out, "\\\\"); break;
+            case '\n': dstr_appendz(out, "\\n"); break;
+            case '\r': dstr_appendz(out, "\\r"); break;
+            case '\t': dstr_appendz(out, "\\t"); break;
+            case '\b': dstr_appendz(out, "\\b"); break;
+            case '\f': dstr_appendz(out, "\\f"); break;
+            default:
+                if (c < 0x20) {
+                    char tmp[8];
+                    snprintf(tmp, sizeof tmp, "\\u%04x", c);
+                    dstr_appendz(out, tmp);
+                } else {
+                    dstr_appendc(out, c);
+                }
+        }
+    }
+}
+
 /* 解析音源脚本头部注释元数据（@name/@description/@version/@author/@homepage），
  * 在 eval 音源脚本前调用 lx-shim 的 __lx_set_script_meta。
  * sixyin 等音源用这些字段做完整性校验（名字/描述/版本必须与脚本内置值一致）。 */
 static void set_script_meta_from_head(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return;
-    char buf[4096];
-    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    /* 读全文：flower/grass 等音源校验 md5(rawScript.trim())，rawScript 必须是完整脚本 */
+    Dstr full;
+    dstr_init(&full);
+    char rbuf[4096];
+    size_t n;
+    while ((n = fread(rbuf, 1, sizeof rbuf, f)) > 0) dstr_append(&full, rbuf, n);
     fclose(f);
-    if (n == 0) return;
-    buf[n] = '\0';
+    if (full.len == 0) {
+        dstr_free(&full);
+        return;
+    }
+    const char *buf = full.buf;
 
     static const char *keys[] = { "name", "description", "version", "author", "homepage" };
     Dstr json;
@@ -2412,15 +2443,18 @@ static void set_script_meta_from_head(const char *path) {
         if (!first) dstr_appendz(&json, ",");
         first = 0;
         dstr_printf(&json, "\"%s\":\"", keys[k]);
-        for (const char *q = start; q < end; q++) {
-            if (*q == '"' || *q == '\\') dstr_appendc(&json, '\\');
-            dstr_appendc(&json, *q);
-        }
+        json_escape_append(&json, start, (size_t)(end - start));
         dstr_appendz(&json, "\"");
     }
+    /* rawScript：完整脚本全文（部分音源做完整性校验） */
+    if (!first) dstr_appendz(&json, ",");
+    dstr_appendz(&json, "\"rawScript\":\"");
+    json_escape_append(&json, buf, full.len);
+    dstr_appendz(&json, "\"");
     dstr_appendz(&json, "})");
     if (first) {
         dstr_free(&json);
+        dstr_free(&full);
         return;
     }
     JSValue ret = JS_Eval(g_ctx, json.buf ? json.buf : "", json.len, "meta", JS_EVAL_TYPE_GLOBAL);
@@ -2433,6 +2467,7 @@ static void set_script_meta_from_head(const char *path) {
     }
     JS_FreeValue(g_ctx, ret);
     dstr_free(&json);
+    dstr_free(&full);
 }
 
 /* ------------------------------------------------------------------ */
