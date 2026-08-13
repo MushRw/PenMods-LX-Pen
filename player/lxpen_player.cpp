@@ -10,6 +10,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -101,6 +102,8 @@ static const char* kOnClickedPrev = "_ZN19YMediaPlayerManager13onClickedPrevEb";
 
 static const char* kRunnerInFifo = "/tmp/lxpen_in";
 static const char* kMusicLockFile = "/tmp/audio_wakelocks/MUSIC.lock";
+static const char* kCacheDir = "/tmp/lxpen_cache";
+static const int kCacheMaxFiles = 10;
 
 /* 词典笔音频守护进程通过 /tmp/audio_wakelocks/<源>.lock 判断音频输出占用：
  * MusicPlayer 播放前创建 MUSIC.lock（acquire），否则播放几秒会被守护进程打断。
@@ -123,6 +126,9 @@ public:
         m_timer = new QTimer(this);
         m_timer->setInterval(50);
         connect(m_timer, &QTimer::timeout, this, &LxPenPlayer::onTick);
+        m_cacheTimer = new QTimer(this);
+        m_cacheTimer->setInterval(300);
+        connect(m_cacheTimer, &QTimer::timeout, this, &LxPenPlayer::onCacheTick);
     }
 
     Q_INVOKABLE void setQueue(const QVariantList& songs, int index, bool autoNext) {
@@ -141,6 +147,7 @@ public:
         }
         cancelPlay();
         m_index = idx;
+        m_playAfterCache = false;
         m_currentSong = m_queue.at(idx).toObject();
         m_currentTitle = m_currentSong.value(QStringLiteral("name")).toString() + QStringLiteral(" - ") +
                          m_currentSong.value(QStringLiteral("singer")).toString();
@@ -165,6 +172,7 @@ public:
 
     Q_INVOKABLE void stop() {
         releaseMusicLock();
+        m_playAfterCache = false;
         void* mpm = resolveTInstance(kYMediaPlayerManagerT);
         if (!mpm) return;
         if (g_hook_api && g_hook_api->querySymbol) {
@@ -225,7 +233,7 @@ signals:
     void playError(const QString& message);
 
 private:
-    enum class Step { Idle, GetUrl, GetLyric, Download, PlayFile, Online, WaitPlaying };
+    enum class Step { Idle, GetUrl, GetLyric, Download, PlayFile, Online, WaitPlaying, CheckCache };
 
     void startStep(Step s) {
         m_step = s;
@@ -240,23 +248,91 @@ private:
         QJsonObject c = cmd;
         c.insert(QStringLiteral("id"), m_respId);
         c.insert(QStringLiteral("respPath"), m_respPath);
-        const QByteArray payload = QJsonDocument(c).toJson(QJsonDocument::Compact) + '\n';
-        int fd = ::open(kRunnerInFifo, O_WRONLY | O_NONBLOCK);
-        if (fd < 0) {
-            soLog("fifo open failed errno=" + QString::number(errno));
-            failStep(QStringLiteral("runner fifo unavailable"));
-            return;
-        }
-        const ssize_t w = ::write(fd, payload.constData(), payload.size());
-        ::close(fd);
-        if (w != (ssize_t)payload.size()) {
-            failStep(QStringLiteral("runner fifo write failed"));
-            return;
-        }
+        if (!writeRpc(c)) return;
         soLog("rpc sent id=" + QString::number(m_respId) + " step=" + QString::number((int)m_step));
         m_waitResp = true;
         m_deadline = QDateTime::currentMSecsSinceEpoch() + timeoutMs;
         m_timer->start();
+    }
+
+    bool writeRpc(const QJsonObject& obj) {
+        const QByteArray payload = QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
+        int fd = ::open(kRunnerInFifo, O_WRONLY | O_NONBLOCK);
+        if (fd < 0) {
+            soLog("fifo open failed errno=" + QString::number(errno));
+            return false;
+        }
+        const ssize_t w = ::write(fd, payload.constData(), payload.size());
+        ::close(fd);
+        return w == (ssize_t)payload.size();
+    }
+
+    /* ---- 歌曲缓存（在线直连播放的同时后台下载，LRU 保持 10 首） ---- */
+    QString cachePathFor() {
+        const QString safeId = QString::fromLatin1(QCryptographicHash::hash(
+            m_currentSong.value(QStringLiteral("songmid")).toString().toUtf8(), QCryptographicHash::Md5).toHex());
+        return QString::fromLatin1(kCacheDir) + QStringLiteral("/lxpen_") + safeId + QStringLiteral(".mp3");
+    }
+
+    static bool cacheHit(const QString& path) {
+        QFileInfo fi(path);
+        return fi.exists() && fi.size() > 102400; /* >100KB 视为有效缓存 */
+    }
+
+    void startCacheDownload() {
+        if (m_cacheBusy || m_currentUrl.isEmpty()) return;
+        m_cachePath = cachePathFor();
+        if (cacheHit(m_cachePath)) return;
+        QDir().mkpath(QString::fromLatin1(kCacheDir));
+        m_cacheBusy = true;
+        m_cacheRespPath = QStringLiteral("/tmp/lxpen_cache_resp.json");
+        QFile::remove(m_cacheRespPath);
+        QJsonObject cmd;
+        cmd.insert(QStringLiteral("cmd"), QStringLiteral("download"));
+        cmd.insert(QStringLiteral("url"), m_currentUrl);
+        cmd.insert(QStringLiteral("path"), m_cachePath);
+        m_cacheSeq++;
+        cmd.insert(QStringLiteral("id"), m_cacheSeq);
+        cmd.insert(QStringLiteral("respPath"), m_cacheRespPath);
+        if (writeRpc(cmd)) {
+            soLog("cache download start: " + m_cachePath.left(50));
+            m_cacheTimer->start(300);
+        } else {
+            m_cacheBusy = false;
+        }
+    }
+
+    void onCacheTick() {
+        if (!m_cacheBusy) { m_cacheTimer->stop(); return; }
+        QFile rf(m_cacheRespPath);
+        if (rf.exists() && rf.open(QIODevice::ReadOnly)) {
+            const QByteArray data = rf.readAll();
+            rf.close();
+            QFile::remove(m_cacheRespPath);
+            m_cacheBusy = false;
+            m_cacheTimer->stop();
+            QJsonParseError err;
+            const QJsonDocument doc = QJsonDocument::fromJson(data, &err);
+            const bool ok = (err.error == QJsonParseError::NoError && doc.isObject() && doc.object().value("ok").toBool());
+            soLog(ok ? "cache download ok: " + m_cachePath : "cache download failed");
+            if (ok) pruneCache();
+            if (ok && m_playAfterCache) {
+                m_playAfterCache = false;
+                m_currentPath = m_cachePath;
+                m_step = Step::Idle;
+                startStep(Step::PlayFile);
+            }
+        }
+    }
+
+    void pruneCache() {
+        QDir dir(QString::fromLatin1(kCacheDir));
+        QFileInfoList files = dir.entryInfoList(QStringList() << QStringLiteral("*.mp3"), QDir::Files, QDir::Time);
+        while (files.size() > kCacheMaxFiles) {
+            QFile::remove(files.last().absoluteFilePath());
+            soLog("cache prune: " + files.last().fileName());
+            files.removeLast();
+        }
     }
 
     QJsonObject pollResp() {
@@ -355,12 +431,25 @@ private:
             finishPlay();
             break;
         }
+        case Step::CheckCache: {
+            m_currentPath = cachePathFor();
+            if (cacheHit(m_currentPath)) {
+                soLog("cache hit: " + m_currentPath);
+                startStep(Step::PlayFile);
+            } else {
+                soLog("cache miss -> online play + background cache");
+                startStep(Step::Online);
+            }
+            break;
+        }
         case Step::Online: {
-            soLog("step online fallback");
+            soLog("step online: " + m_currentUrl.left(60));
             if (doPlay(m_currentUrl, m_currentTitle, m_currentLrc, true)) {
                 m_waitPlayingUntil = QDateTime::currentMSecsSinceEpoch() + 5000;
                 m_step = Step::WaitPlaying;
                 m_timer->start();
+                /* 在线直连播放的同时后台缓存（不阻塞状态机） */
+                startCacheDownload();
             } else {
                 failStep(QStringLiteral("在线播放失败"));
             }
@@ -372,7 +461,15 @@ private:
                 finishPlay();
             } else if (QDateTime::currentMSecsSinceEpoch() > m_waitPlayingUntil) {
                 soLog("online did not play");
-                failStep(QStringLiteral("在线播放失败"));
+                if (m_cacheBusy) {
+                    /* 宿主在线播放不支持：等缓存下载完成后再播本地文件 */
+                    soLog("wait cache then play file");
+                    m_playAfterCache = true;
+                    m_step = Step::Idle;
+                    m_timer->stop();
+                } else {
+                    failStep(QStringLiteral("在线播放失败"));
+                }
             }
             break;
         }
@@ -398,7 +495,7 @@ private:
             m_currentLrc = ok ? resp.value(QStringLiteral("data")).toObject().value(QStringLiteral("path")).toString()
                               : QString();
             soLog("lrc: " + m_currentLrc);
-            startStep(Step::Download);
+            startStep(Step::CheckCache);
             break;
         case Step::Download:
             if (ok) {
@@ -506,6 +603,12 @@ private:
     QString m_respPath;
     int m_respId = 0;
     qint64 m_playStartedAt = 0;
+    QTimer* m_cacheTimer = nullptr;
+    bool m_cacheBusy = false;
+    bool m_playAfterCache = false;
+    int m_cacheSeq = 0;
+    QString m_cachePath;
+    QString m_cacheRespPath;
     QJsonObject m_currentSong;
     QString m_currentTitle;
     QString m_currentSource;
