@@ -162,7 +162,7 @@ Item {
                 if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.stop) {
                     lxpenPlayer.stop()
                 }
-                root.backButtonClicked()
+                root.exitPlugin()
             }
         }
     }

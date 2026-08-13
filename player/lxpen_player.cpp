@@ -138,6 +138,11 @@ public:
         m_cacheTimer = new QTimer(this);
         m_cacheTimer->setInterval(300);
         connect(m_cacheTimer, &QTimer::timeout, this, &LxPenPlayer::onCacheTick);
+        /* 空闲监控：宿主已停止且插件页面关闭时，回收后台 runner（2s 轮询） */
+        m_idleTimer = new QTimer(this);
+        m_idleTimer->setInterval(2000);
+        connect(m_idleTimer, &QTimer::timeout, this, &LxPenPlayer::onIdleTick);
+        m_idleTimer->start();
     }
 
     Q_INVOKABLE void setQueue(const QVariantList& songs, int index) {
@@ -145,6 +150,17 @@ public:
         m_index = index;
     }
     Q_INVOKABLE void setQuality(const QString& q) { m_quality = q; }
+
+    /* QML 页面生命周期：打开时 true，关闭时 false（配合空闲监控回收 runner） */
+    Q_INVOKABLE void setUiOpen(bool open) {
+        m_uiOpen = open;
+        soLog("uiOpen=" + QString::number(open ? 1 : 0));
+    }
+
+    /* 宿主是否处于播放/暂停：QML 退出时据此决定是否回收 runner */
+    Q_INVOKABLE bool isHostActive() {
+        return isPlaying() || isPaused();
+    }
 
     Q_INVOKABLE void playIndex(int idx) {
         if (idx < 0 || idx >= m_queue.size()) {
@@ -156,6 +172,7 @@ public:
         /* 切换中：任何 onSoundEnd 一律忽略，直到新歌真正开播（finishPlay 重置） */
         m_playStartedAt = 0;
         m_advanceHandled = false;
+        m_ourSeq = 0;
         m_playAfterCache = false;
         m_currentSong = m_queue.at(idx).toObject();
         m_currentTitle = m_currentSong.value(QStringLiteral("name")).toString() + QStringLiteral(" - ") +
@@ -183,8 +200,7 @@ public:
         releaseMusicLock();
         m_playAfterCache = false;
         void* mpm = resolveTInstance(kYMediaPlayerManagerT);
-        if (!mpm) return;
-        if (g_hook_api && g_hook_api->querySymbol) {
+        if (mpm && g_hook_api && g_hook_api->querySymbol) {
             VoidFn pause = (VoidFn)g_hook_api->querySymbol(kOnClickedPause);
             SetPlayStateFn setState = (SetPlayStateFn)g_hook_api->querySymbol(kSetPlayState);
             if (pause) pause(mpm);
@@ -194,24 +210,24 @@ public:
             }
         }
         cancelPlay();
+        /* 显式停止：彻底解除接管，避免宿主播放器后续按钮/结束事件被插件劫持 */
+        m_takeover = false;
+        m_queue = QJsonArray();
+        m_index = -1;
+        m_playStartedAt = 0;
+        m_ourSeq = 0;
+        m_advanceHandled = false;
     }
 
-    void handleSongEnded(void* self, uint32_t seq) {
-        /* 手动停止（切歌/停止）时宿主也会发 onSoundEnd，此时非 PLAYING，忽略以免误触发连播 */
-        void* mpm = resolveTInstance(kYMediaPlayerManagerT);
-        int state = -1;
-        if (mpm && g_hook_api && g_hook_api->querySymbol) {
-            typedef int (*PlayStateFn)(void*);
-            PlayStateFn getState = (PlayStateFn)g_hook_api->querySymbol("_ZNK19YMediaPlayerManager9playStateEv");
-            if (getState) state = getState(mpm);
-        }
+    void handleSongEnded(uint32_t seq, uint32_t curEntry, int stateEntry) {
         qint64 sinceStart = QDateTime::currentMSecsSinceEpoch() - m_playStartedAt;
-        const uint32_t curSeq = currentAudioSeq(self);
-        soLog("songEnded seq=" + QString::number(seq) + " cur=" + QString::number(curSeq) +
-              " state=" + QString::number(state) + " sinceStart=" + QString::number(sinceStart) + "ms");
-        if (m_playStartedAt <= 0) return; /* 切换中/未开播，忽略 */
-        if (state != 0) return;           /* 非 PLAYING：手动停止/暂停触发，不连播 */
-        if (curSeq != seq) return;        /* 旧音频会话的结束事件（宿主初始化/切歌残留），忽略 */
+        soLog("songEnded seq=" + QString::number(seq) + " cur=" + QString::number(curEntry) +
+              " state=" + QString::number(stateEntry) + " sinceStart=" + QString::number(sinceStart) +
+              "ms takeover=" + QString::number(m_takeover ? 1 : 0) + " ourSeq=" + QString::number(m_ourSeq));
+        if (!m_takeover || m_playStartedAt <= 0) return; /* 未接管/切换中/未开播，忽略 */
+        if (stateEntry != 0) return;      /* 非 PLAYING：手动停止/暂停触发，不连播 */
+        /* 结束事件必须是"我们当前会话"：seq==cur（当前会话结束）且 cur==m_ourSeq（会话属于本插件） */
+        if (seq != curEntry || curEntry != m_ourSeq) return;
         /* 播放开始 8 秒内的 onSoundEnd 视为误触发（宿主初始化/打断），忽略以免误切歌 */
         if (sinceStart < 8000) return;
         if (m_queue.size() == 0 || m_index < 0) return;
@@ -222,6 +238,25 @@ public:
         soLog("auto next idx=" + QString::number(next));
         playIndex(next);
         emit songEnded();
+    }
+
+    /* 空闲监控：宿主已停止播放且插件页面已关闭 → 让 runner 退出并释放资源。
+     * 播放中/暂停中一律保留 runner（后台续播/悬浮球需要它解析后续 musicUrl）。 */
+    void onIdleTick() {
+        if (m_uiOpen || !m_takeover) return;
+        if (isPlaying() || isPaused()) return;
+        soLog("idle: host stopped & ui closed -> quit runner");
+        QJsonObject cmd;
+        cmd.insert(QStringLiteral("cmd"), QStringLiteral("quit"));
+        writeRpc(cmd);
+        releaseMusicLock();
+        m_takeover = false;
+        m_queue = QJsonArray();
+        m_index = -1;
+        m_playStartedAt = 0;
+        m_ourSeq = 0;
+        m_advanceHandled = false;
+        cancelPlay();
     }
 
     /* 手动/宿主"下一首"：经宿主播放器 onClickedNext 同一路径推进队列。
@@ -247,6 +282,7 @@ public:
     }
 
     bool isActive() const { return m_queue.size() > 0; }
+    bool isTakeover() const { return m_takeover; }
 
 signals:
     void songEnded();
@@ -306,6 +342,7 @@ private:
         if (cacheHit(m_cachePath)) return;
         QDir().mkpath(QString::fromLatin1(kCacheDir));
         m_cacheBusy = true;
+        m_cacheStartAt = QDateTime::currentMSecsSinceEpoch();
         m_cacheRespPath = QStringLiteral("/tmp/lxpen_cache_resp.json");
         QFile::remove(m_cacheRespPath);
         QJsonObject cmd;
@@ -325,16 +362,28 @@ private:
 
     void onCacheTick() {
         if (!m_cacheBusy) { m_cacheTimer->stop(); return; }
+        if (QDateTime::currentMSecsSinceEpoch() > m_cacheStartAt + 90000) {
+            soLog("cache download timeout");
+            m_cacheBusy = false;
+            m_cacheTimer->stop();
+            return;
+        }
         QFile rf(m_cacheRespPath);
         if (rf.exists() && rf.open(QIODevice::ReadOnly)) {
             const QByteArray data = rf.readAll();
             rf.close();
             QFile::remove(m_cacheRespPath);
-            m_cacheBusy = false;
-            m_cacheTimer->stop();
             QJsonParseError err;
             const QJsonDocument doc = QJsonDocument::fromJson(data, &err);
-            const bool ok = (err.error == QJsonParseError::NoError && doc.isObject() && doc.object().value("ok").toBool());
+            const QJsonObject obj = (err.error == QJsonParseError::NoError && doc.isObject()) ? doc.object() : QJsonObject();
+            if (obj.value(QStringLiteral("id")).toInt() != m_cacheSeq) {
+                /* 切歌后旧下载的响应才到达：忽略，继续等当前下载 */
+                soLog("cache resp id mismatch, ignore");
+                return;
+            }
+            m_cacheBusy = false;
+            m_cacheTimer->stop();
+            const bool ok = obj.value(QStringLiteral("ok")).toBool();
             soLog(ok ? "cache download ok: " + m_cachePath : "cache download failed");
             if (ok) pruneCache();
             if (ok && m_playAfterCache) {
@@ -383,6 +432,9 @@ private:
         m_timer->stop();
         m_playStartedAt = QDateTime::currentMSecsSinceEpoch();
         m_advanceHandled = false;
+        /* 宿主已确认开播：刷新会话号，确保"真结束"事件能被识别为本插件的会话 */
+        void* mpm = resolveTInstance(kYMediaPlayerManagerT);
+        if (mpm) m_ourSeq = currentAudioSeq(mpm);
         emit songStarted(m_index);
     }
 
@@ -391,6 +443,11 @@ private:
         m_waitResp = false;
         m_timer->stop();
         if (!m_respPath.isEmpty()) QFile::remove(m_respPath);
+        /* 复位缓存下载：避免切换/停止后缓存单飞卡死或串读旧响应 */
+        m_cacheTimer->stop();
+        m_cacheBusy = false;
+        m_playAfterCache = false;
+        if (!m_cacheRespPath.isEmpty()) QFile::remove(m_cacheRespPath);
     }
 
     void onTick() {
@@ -541,6 +598,14 @@ private:
         return getState && getState(mpm) == 0; /* PLAYING */
     }
 
+    bool isPaused() {
+        void* mpm = resolveTInstance(kYMediaPlayerManagerT);
+        if (!mpm || !g_hook_api || !g_hook_api->querySymbol) return false;
+        typedef int (*PlayStateFn)(void*);
+        PlayStateFn getState = (PlayStateFn)g_hook_api->querySymbol("_ZNK19YMediaPlayerManager9playStateEv");
+        return getState && getState(mpm) == 1; /* PAUSED */
+    }
+
     void soLog(const QString& msg) {
         QFile f(QStringLiteral("/tmp/lxpen_so.log"));
         if (f.open(QIODevice::Append | QIODevice::WriteOnly)) {
@@ -609,6 +674,9 @@ private:
             if (onClickedPlay) onClickedPlay(mpm);
             if (setHasLrc) setHasLrc(mpm, !lrcPath.isEmpty());
         }
+        /* 接管播放：next/prev 钩子与连播逻辑自此归属本插件 */
+        m_takeover = true;
+        m_ourSeq = currentAudioSeq(mpm);
         return true;
     }
 
@@ -637,6 +705,11 @@ private:
     QString m_currentLrc;
     QString m_currentPath;
     bool m_advanceHandled = false;
+    bool m_takeover = false;
+    bool m_uiOpen = false;
+    uint32_t m_ourSeq = 0;
+    QTimer* m_idleTimer = nullptr;
+    qint64 m_cacheStartAt = 0;
 };
 
 static LxPenPlayer* g_player = nullptr;
@@ -645,13 +718,22 @@ static void* (*g_origOnClickedNext)(void*, bool) = nullptr;
 static void* (*g_origOnClickedPrev)(void*, bool) = nullptr;
 
 static void* onSoundEndDetour(void* self, uint32_t seq) {
+    /* 宿主原函数可能改动会话序号/状态，必须在调用前捕获（对齐 MusicPlayer 的判断时机） */
+    const uint32_t curEntry = currentAudioSeq(self);
+    int stateEntry = -1;
+    void* mpm = resolveTInstance(kYMediaPlayerManagerT);
+    if (mpm && g_hook_api && g_hook_api->querySymbol) {
+        typedef int (*PlayStateFn)(void*);
+        PlayStateFn getState = (PlayStateFn)g_hook_api->querySymbol("_ZNK19YMediaPlayerManager9playStateEv");
+        if (getState) stateEntry = getState(mpm);
+    }
     if (g_origOnSoundEnd) g_origOnSoundEnd(self, seq);
-    if (g_player) g_player->handleSongEnded(self, seq);
+    if (g_player) g_player->handleSongEnded(seq, curEntry, stateEntry);
     return self;
 }
 
 static void* onClickedNextDetour(void* self, bool a2) {
-    if (g_player && g_player->isActive()) {
+    if (g_player && g_player->isTakeover()) {
         g_player->handleNext();
         return nullptr;
     }
@@ -660,7 +742,7 @@ static void* onClickedNextDetour(void* self, bool a2) {
 }
 
 static void* onClickedPrevDetour(void* self, bool a2) {
-    if (g_player && g_player->isActive()) {
+    if (g_player && g_player->isTakeover()) {
         g_player->handlePrev();
         return nullptr;
     }

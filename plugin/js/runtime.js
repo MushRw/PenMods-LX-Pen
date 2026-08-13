@@ -235,12 +235,13 @@ globalThis.__lx_on_rpc = jsonStr => {
       data => {
         const json = JSON.stringify({ ok: true, data });
         native.rpc_done(id, json);
-        if (respPath) native.file_write(respPath, json);
+        /* 响应文件也带上 id：SO 侧并发缓存下载需要区分新旧响应 */
+        if (respPath) native.file_write(respPath, '{"id":' + id + ',' + json.slice(1));
       },
       err => {
         const json = JSON.stringify({ ok: false, error: String(err && err.message ? err.message : err) });
         native.rpc_done(id, json);
-        if (respPath) native.file_write(respPath, json);
+        if (respPath) native.file_write(respPath, '{"id":' + id + ',' + json.slice(1));
       }
     );
 };

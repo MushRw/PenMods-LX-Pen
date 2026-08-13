@@ -269,7 +269,7 @@ Item {
                     anchors.fill: parent
                     onClicked: {
                         root.touchDebug("exit")
-                        root.backButtonClicked()
+                        root.exitPlugin()
                     }
                 }
             }

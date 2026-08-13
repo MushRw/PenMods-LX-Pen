@@ -297,20 +297,20 @@ Rectangle {
         readOffset = 0
         pendingOut = ""
         // 后台播放：若已有 runner 在跑（关页面不杀），直接重连，从输出文件尾部开始读；
-        // 重连 ping 失败（runner 僵死）则强杀后全新启动
+        // 重连只重连：ping 失败只提示不重启（runner 正忙/下载中会短暂无响应，误杀会打断播放）
         var alive = shell.exec("pgrep penmusic >/dev/null 2>&1 && echo 1 || echo 0").trim()
         if (alive === "1") {
             var sz = shell.exec("wc -c < '" + outFile + "' 2>/dev/null; true").trim()
             var n = parseInt(sz, 10)
             readOffset = (isNaN(n) || n < 0) ? 0 : n
+            // 进程存活即说明脚本已加载成功（加载失败会退出），直接标记就绪
+            scriptReady = true
+            scriptError = ""
             rpcSend({ cmd: "ping" }, function(res) {
                 if (res.ok) {
-                    scriptReady = true
-                    scriptError = ""
                     pushLog("info", "已重连后台 runner")
                 } else {
-                    pushLog("warn", "重连后台 runner 失败，全新启动")
-                    startFreshRunner()
+                    pushLog("warn", "runner 暂未响应（可能正忙），仅重连不重启")
                 }
             }, 3000)
         } else {
@@ -336,14 +336,36 @@ Rectangle {
     function pingRunner() {
         if (!scriptReady && !scriptError) return
         rpcSend({ cmd: "ping" }, function(res) {
-            if (!res.ok) pingFail++
-            else pingFail = 0
-            if (pingFail >= 3) {
+            if (!res.ok) {
+                pingFail++
+                if (pingFail >= 6) {
+                    // 只有进程真的不在了才重建；活着的 runner 只是忙，不能杀（避免打断播放）
+                    var alive = shell.exec("pgrep penmusic >/dev/null 2>&1 && echo 1 || echo 0").trim()
+                    if (alive !== "1") {
+                        pingFail = 0
+                        pushLog("warn", "runner 已退出，重新启动")
+                        startFreshRunner()
+                    }
+                }
+            } else {
                 pingFail = 0
-                pushLog("warn", "runner 无响应，重启")
-                restartRunner()
             }
         }, 5000)
+    }
+
+    /* 退出插件页面：告知 SO 页面已关闭（配合空闲监控回收 runner），再让宿主关页。
+     * 播放中退出时 runner 保留，后台续播不受影响。 */
+    function exitPlugin() {
+        if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setUiOpen) {
+            try { lxpenPlayer.setUiOpen(false) } catch (e) {}
+        }
+        // 宿主已停止（非播放/暂停）时直接回收 runner；播放中则留给 SO 空闲监控/后台续播
+        var hostActive = false
+        if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.isHostActive) {
+            try { hostActive = lxpenPlayer.isHostActive() } catch (e) {}
+        }
+        if (!hostActive) stopRunner()
+        root.backButtonClicked()
     }
 
     /* ---------- 搜索 / 播放 ---------- */
@@ -559,6 +581,9 @@ Rectangle {
     }
 
     Component.onCompleted: {
+        if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setUiOpen) {
+            try { lxpenPlayer.setUiOpen(true) } catch (e) {}
+        }
         loadSettings()
         scanScripts()
         // 设置的音源脚本不存在时回退默认（防止旧设置/被删脚本导致 runner 用错音源）
@@ -581,6 +606,9 @@ Rectangle {
     Component.onDestruction: {
         destroying = true
         pollTimer.stop()
-        // 不杀 runner/mpv：后台继续播放；再次打开时 startRunner 会重连
+        if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setUiOpen) {
+            try { lxpenPlayer.setUiOpen(false) } catch (e) {}
+        }
+        // 不主动杀 runner：若已停止播放，SO 空闲监控会在数秒内回收；播放中则保留后台续播
     }
 }
