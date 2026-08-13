@@ -52,12 +52,12 @@ Item {
 
             Text {
                 anchors.left: parent.left; anchors.leftMargin: 10
+                anchors.right: clearBtn.left; anchors.rightMargin: 4
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.keyword === "" ? "搜索歌曲..." : root.keyword
                 color: root.keyword === "" ? Theme.textSub : Theme.text
                 font.pixelSize: Theme.pxNormal
                 elide: Text.ElideRight
-                width: parent.width - 40
             }
 
             MouseArea {
@@ -65,6 +65,34 @@ Item {
                 onClicked: {
                     root.touchDebug("searchbox")
                     keyboard.open(root.keyword)
+                }
+            }
+
+            /* 清空按钮：清空搜索框并回到搜索记录 */
+            Rectangle {
+                id: clearBtn
+                z: 2
+                width: 20; height: 20
+                anchors.right: parent.right; anchors.rightMargin: 5
+                anchors.verticalCenter: parent.verticalCenter
+                radius: 10
+                visible: root.keyword !== "" || root.searchResult.length > 0
+                color: clearArea.pressed ? Theme.cardHi : "transparent"
+                Text {
+                    anchors.centerIn: parent
+                    text: "×"
+                    color: Theme.textSub
+                    font.pixelSize: Theme.pxNormal
+                    font.bold: true
+                }
+                MouseArea {
+                    id: clearArea
+                    anchors.fill: parent
+                    onClicked: {
+                        root.touchDebug("clearSearch")
+                        root.keyword = ""
+                        root.searchResult = []
+                    }
                 }
             }
         }
