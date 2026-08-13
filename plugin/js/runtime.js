@@ -73,7 +73,7 @@ async function handleDownload(req) {
   const resp = await I.request(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36' },
     binary: true,
-    timeout: 30000,
+    timeout: 120000,
   });
   if (resp.status !== 200) throw new Error('download http ' + resp.status);
   if (!native.file_write(path, resp.body)) throw new Error('download write failed');

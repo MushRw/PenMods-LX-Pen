@@ -660,6 +660,7 @@ static int64_t next_timer_deadline(void) {
 #define CURLOPT_TIMEOUT_MS 155
 #define CURLOPT_CAINFO 10065
 #define CURLOPT_ACCEPT_ENCODING 10102
+#define CURLOPT_BUFFERSIZE 98
 #define CURLINFO_RESPONSE_CODE 0x200002
 #define CURLMSG_DONE 1
 
@@ -1748,6 +1749,8 @@ static JSValue js_request_start(JSContext *ctx, JSValueConst this_val, int argc,
     C.easy_setopt(r->easy, CURLOPT_MAXREDIRS, 5L);
     C.easy_setopt(r->easy, CURLOPT_NOSIGNAL, 1L);
     C.easy_setopt(r->easy, CURLOPT_TIMEOUT_MS, (long)timeout);
+    /* 增大接收缓冲：词典笔 libcurl 默认缓冲下载 5MB 音频极慢（busybox curl 2s vs libcurl 70s） */
+    C.easy_setopt(r->easy, CURLOPT_BUFFERSIZE, 1024L * 512);
     /* binary（音频下载等）不请求 gzip：部分 CDN 对 Accept-Encoding:gzip 返回压缩流，
      * 词典笔 libcurl 解压 5MB 音频异常导致下载失败（WinHTTP 无此问题） */
     if (!r->binary) C.easy_setopt(r->easy, CURLOPT_ACCEPT_ENCODING, "");
