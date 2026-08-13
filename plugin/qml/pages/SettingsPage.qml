@@ -108,39 +108,7 @@ Item {
                     color: autoArea.pressed ? Theme.cardHi : Theme.card
                     border.color: Theme.line
                     border.width: 1
-                    Text {
-                        anchors.left: parent.left; anchors.leftMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: "自动连播"
-                        color: Theme.text
-                        font.pixelSize: Theme.pxSmall
-                    }
-                    Rectangle {
-                        anchors.right: parent.right; anchors.rightMargin: 6
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 30; height: 18
-                        radius: 9
-                        color: root.autoNext ? Theme.success : Theme.line
-                        Rectangle {
-                            width: 14; height: 14
-                            radius: 7
-                            color: Theme.text
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.left: parent.left
-                            anchors.leftMargin: root.autoNext ? 14 : 2
-                        }
-                    }
-                    MouseArea {
-                        id: autoArea
-                        anchors.fill: parent
-                        onClicked: {
-                            root.autoNext = !root.autoNext
-                            root.saveSettings()
-                            if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setAutoNext) {
-                                lxpenPlayer.setAutoNext(root.autoNext)
-                            }
-                        }
-                    }
+                    
                 }
 
                 Rectangle {

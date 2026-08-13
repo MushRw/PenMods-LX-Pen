@@ -97,8 +97,6 @@ static const char* kWipeData = "_ZN19YMediaPlayerManager8wipeDataEv";
 static const char* kSetPlayState = "_ZN19YMediaPlayerManager12setPlayStateERKN12YEnumWrapper10Play_StateE";
 static const char* kEntityCtor = "_ZN18YColumnMediaEntityC2EP7QObject";
 static const char* kOnSoundEnd = "_ZN19YMediaPlayerManager10onSoundEndEj";
-static const char* kOnClickedNext = "_ZN19YMediaPlayerManager13onClickedNextEb";
-static const char* kOnClickedPrev = "_ZN19YMediaPlayerManager13onClickedPrevEb";
 
 static const char* kRunnerInFifo = "/tmp/lxpen_in";
 static const char* kMusicLockFile = "/tmp/audio_wakelocks/MUSIC.lock";
@@ -131,13 +129,10 @@ public:
         connect(m_cacheTimer, &QTimer::timeout, this, &LxPenPlayer::onCacheTick);
     }
 
-    Q_INVOKABLE void setQueue(const QVariantList& songs, int index, bool autoNext) {
+    Q_INVOKABLE void setQueue(const QVariantList& songs, int index) {
         m_queue = QJsonArray::fromVariantList(songs);
         m_index = index;
-        m_autoNext = autoNext;
     }
-
-    Q_INVOKABLE void setAutoNext(bool on) { m_autoNext = on; }
     Q_INVOKABLE void setQuality(const QString& q) { m_quality = q; }
 
     Q_INVOKABLE void playIndex(int idx) {
@@ -202,27 +197,6 @@ public:
         /* 播放开始 8 秒内的 onSoundEnd 视为误触发（宿主初始化/打断），忽略以免误切歌 */
         if (m_playStartedAt > 0 && sinceStart < 8000) return;
         emit songEnded();
-        if (m_autoNext && m_queue.size() > 0) {
-            int next = m_index + 1;
-            if (next >= m_queue.size()) next = 0;
-            playIndex(next);
-        }
-    }
-
-    void handleNext() {
-        /* 播放开始 8 秒内宿主的 next 调用视为误触发（宿主误判结束自动切歌，与 SO 连播打架） */
-        if (m_playStartedAt > 0 && QDateTime::currentMSecsSinceEpoch() - m_playStartedAt < 8000) return;
-        if (m_queue.size() == 0) return;
-        int next = m_index + 1;
-        if (next >= m_queue.size()) next = 0;
-        playIndex(next);
-    }
-
-    void handlePrev() {
-        if (m_queue.size() == 0) return;
-        int prev = m_index - 1;
-        if (prev < 0) prev = m_queue.size() - 1;
-        playIndex(prev);
     }
 
     bool isActive() const { return m_queue.size() > 0; }
@@ -592,7 +566,6 @@ private:
 
     QJsonArray m_queue;
     int m_index = -1;
-    bool m_autoNext = false;
     QString m_quality;
     int m_rpcSeq = 0;
     QTimer* m_timer = nullptr;
@@ -619,31 +592,10 @@ private:
 
 static LxPenPlayer* g_player = nullptr;
 static OnSoundEndFn g_origOnSoundEnd = nullptr;
-static void* (*g_origOnClickedNext)(void*, bool) = nullptr;
-static void* (*g_origOnClickedPrev)(void*, bool) = nullptr;
-
 static void* onSoundEndDetour(void* self, uint32_t seq) {
     if (g_origOnSoundEnd) g_origOnSoundEnd(self, seq);
     if (g_player) g_player->handleSongEnded();
     return self;
-}
-
-static void* onClickedNextDetour(void* self, bool a2) {
-    if (g_player && g_player->isActive()) {
-        g_player->handleNext();
-        return nullptr;
-    }
-    if (g_origOnClickedNext) return g_origOnClickedNext(self, a2);
-    return nullptr;
-}
-
-static void* onClickedPrevDetour(void* self, bool a2) {
-    if (g_player && g_player->isActive()) {
-        g_player->handlePrev();
-        return nullptr;
-    }
-    if (g_origOnClickedPrev) return g_origOnClickedPrev(self, a2);
-    return nullptr;
 }
 
 extern "C" {
@@ -658,10 +610,6 @@ void init_plugin_with_hook_api(PluginHookAPI* api) {
     if (g_hook_api && g_hook_api->querySymbol && g_hook_api->hookFunction) {
         void* addr = g_hook_api->querySymbol(kOnSoundEnd);
         if (addr) g_hook_api->hookFunction(addr, (void*)onSoundEndDetour, (void**)&g_origOnSoundEnd);
-        void* addrNext = g_hook_api->querySymbol(kOnClickedNext);
-        if (addrNext) g_hook_api->hookFunction(addrNext, (void*)onClickedNextDetour, (void**)&g_origOnClickedNext);
-        void* addrPrev = g_hook_api->querySymbol(kOnClickedPrev);
-        if (addrPrev) g_hook_api->hookFunction(addrPrev, (void*)onClickedPrevDetour, (void**)&g_origOnClickedPrev);
     }
 }
 

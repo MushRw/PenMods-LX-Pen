@@ -39,7 +39,6 @@ Rectangle {
 
     property string mpvPath: "/userdisk/mpv/mpv"
     property string quality: "320k"
-    property bool autoNext: false
     property var scriptList: []
     property string selectedScript: "lx-source.js"
     property var scriptSources: ({})
@@ -118,8 +117,6 @@ Rectangle {
                 }
                 rs = tx.executeSql("SELECT value FROM kv WHERE key='mpv'")
                 if (rs.rows.length) mpvPath = rs.rows.item(0).value
-                rs = tx.executeSql("SELECT value FROM kv WHERE key='autoNext'")
-                if (rs.rows.length) autoNext = rs.rows.item(0).value === "1"
                 rs = tx.executeSql("SELECT value FROM kv WHERE key='script'")
                 if (rs.rows.length) selectedScript = rs.rows.item(0).value
                 rs = tx.executeSql("SELECT value FROM kv WHERE key='history'")
@@ -138,7 +135,6 @@ Rectangle {
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('platform',?)", [platform])
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('quality',?)", [quality])
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('mpv',?)", [mpvPath])
-                tx.executeSql("INSERT OR REPLACE INTO kv VALUES('autoNext',?)", [autoNext ? "1" : "0"])
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('script',?)", [selectedScript])
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('history',?)", [JSON.stringify(searchHistory)])
             })
@@ -262,9 +258,6 @@ Rectangle {
         } else if (st.state === "stopped" || st.state === "ended") {
             playing = false
             paused = true
-            if (st.state === "ended" && autoNext && currentSong) {
-                Qt.callLater(playNext)
-            }
         }
         if (st.timePos !== undefined && st.timePos !== null) timePos = st.timePos
         if (st.duration !== undefined && st.duration !== null && st.duration >= 0) duration = st.duration
@@ -404,7 +397,7 @@ Rectangle {
         // 播放/队列/连播全部交给 SO（lxpenPlayer），它不随本页面销毁，回主页后仍能自动连播
         if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setQueue && lxpenPlayer.playIndex) {
             try {
-                lxpenPlayer.setQueue(queue, queueIndex, autoNext)
+                lxpenPlayer.setQueue(queue, queueIndex)
                 lxpenPlayer.setQuality(quality)
                 lxpenPlayer.playIndex(queueIndex)
             } catch (e) {
@@ -583,9 +576,6 @@ Rectangle {
         }
         startRunner()
         // 把自动连播设置同步给常驻 SO（回主页后连播逻辑由 SO 承担）
-        if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.setAutoNext) {
-            lxpenPlayer.setAutoNext(autoNext)
-        }
     }
 
     Component.onDestruction: {
