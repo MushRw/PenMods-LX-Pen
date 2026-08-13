@@ -60,7 +60,7 @@ Item {
         horizontalAlignment: Text.AlignRight
     }
 
-    /* 下载按钮：下载到 /userdisk/music */
+    /* 下载按钮：下载到文件管理可见的 /userdisk/Music */
     Rectangle {
         id: dlBtn
         z: 2 /* 必须盖过整行点击区域（area），否则点下载会触发播放 */

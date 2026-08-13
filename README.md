@@ -64,7 +64,7 @@ python3 scripts/package.py
 - runner（penmusic）负责解析 `musicUrl` / 歌词 / 下载；宿主系统播放器负责出声与悬浮球后台播放；
 - 手动切歌 / 自动连播由宿主播放器事件驱动（`onClickedNext/Prev`、`onSoundEnd`），队列在 SO 内维护；
 - 重开插件页面只重连 runner（不重启、不打断播放）；页面关闭且宿主已停止播放时自动回收 runner；
-- 搜索结果行 `↓` 下载到 `/userdisk/music/`，下载页可播放 / 删除，记录持久化。
+- 搜索结果行 `↓` 下载到文件管理可见的 `/userdisk/Music/`，下载页可播放 / 删除，记录持久化。
 
 ## 已知限制
 
