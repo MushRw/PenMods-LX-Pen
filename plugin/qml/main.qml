@@ -129,6 +129,15 @@ Rectangle {
                 if (rs.rows.length) {
                     try { downloads = JSON.parse(rs.rows.item(0).value) || [] } catch (e) { downloads = [] }
                 }
+                rs = tx.executeSql("SELECT value FROM kv WHERE key='queue'")
+                if (rs.rows.length) {
+                    try { queue = JSON.parse(rs.rows.item(0).value) || [] } catch (e) { queue = [] }
+                }
+                rs = tx.executeSql("SELECT value FROM kv WHERE key='queueIndex'")
+                if (rs.rows.length) {
+                    var qi = parseInt(rs.rows.item(0).value, 10)
+                    queueIndex = (isNaN(qi) || qi < 0) ? -1 : qi
+                }
             })
         } catch (e) { console.warn("loadSettings", e) }
     }
@@ -144,6 +153,8 @@ Rectangle {
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('script',?)", [selectedScript])
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('history',?)", [JSON.stringify(searchHistory)])
                 tx.executeSql("INSERT OR REPLACE INTO kv VALUES('downloads',?)", [JSON.stringify(downloads)])
+                tx.executeSql("INSERT OR REPLACE INTO kv VALUES('queue',?)", [JSON.stringify(queue)])
+                tx.executeSql("INSERT OR REPLACE INTO kv VALUES('queueIndex',?)", [String(queueIndex)])
             })
         } catch (e) { console.warn("saveSettings", e) }
     }
@@ -371,7 +382,13 @@ Rectangle {
         if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.isHostActive) {
             try { hostActive = lxpenPlayer.isHostActive() } catch (e) {}
         }
-        if (!hostActive) stopRunner()
+        if (!hostActive) {
+            // 已停止播放：回收 runner，同时清掉保存的播放队列（避免重开还恢复旧队列）
+            queue = []
+            queueIndex = -1
+            saveSettings()
+            stopRunner()
+        }
         root.backButtonClicked()
     }
 
@@ -494,6 +511,8 @@ Rectangle {
         // 列表点击传入 delegate 的 index（modelData 与 queue 元素引用不一致，indexOf 不可靠）
         if (idx !== undefined && idx >= 0 && idx < queue.length) queueIndex = idx
         else queueIndex = queue.indexOf(song)
+        // 持久化当前播放队列：重开页面后 SO 被重建，需要恢复上下文（resumeQueue）
+        saveSettings()
         shell.exec("echo 'playSong type=" + (typeof lxpenPlayer) + " idx=" + queueIndex +
                    " has=" + (lxpenPlayer && typeof lxpenPlayer.playIndex) + "' >> /tmp/lxpen_touch.log")
         // 播放/队列/连播全部交给 SO（lxpenPlayer），它不随本页面销毁，回主页后仍能自动连播
@@ -576,9 +595,6 @@ Rectangle {
         }
         lyricData[idx].active = true
         lyricData = lyricData
-        if (page === "player" && typeof playerPage !== "undefined") {
-            playerPage.positionLyric(idx)
-        }
     }
 
     /* ---------- 脚本扫描 ---------- */
@@ -669,6 +685,18 @@ Rectangle {
             try { lxpenPlayer.setUiOpen(true) } catch (e) {}
         }
         loadSettings()
+        // 重开页面：宿主若仍在播放且保存过队列，恢复播放上下文（上一首/下一首/自动连播）
+        var canResume = false
+        if (typeof lxpenPlayer !== "undefined" && lxpenPlayer && lxpenPlayer.resumeQueue && lxpenPlayer.isHostActive) {
+            try { canResume = lxpenPlayer.isHostActive() } catch (e) { canResume = false }
+        }
+        if (canResume && queue.length > 0 && queueIndex >= 0 && queueIndex < queue.length) {
+            try {
+                lxpenPlayer.resumeQueue(queue, queueIndex)
+                currentSong = queue[queueIndex]
+                pushLog("info", "已恢复播放上下文 idx=" + queueIndex)
+            } catch (e) { pushLog("warn", "恢复播放上下文失败") }
+        }
         scanScripts()
         // 设置的音源脚本不存在时回退默认（防止旧设置/被删脚本导致 runner 用错音源）
         var scriptFound = false

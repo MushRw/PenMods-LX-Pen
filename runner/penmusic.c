@@ -173,6 +173,8 @@ static JSRuntime *g_rt = NULL;
 static int g_inited = 0;
 static int g_quit = 0;
 static int64_t g_start_ms = 0;
+/* 最后一次收到命令的时间（毫秒）：页面关闭且无人使用时作为退出兜底 */
+static int64_t g_last_cmd_ms = 0;
 
 /* io */
 static int g_fd_in = -1;
@@ -2212,19 +2214,33 @@ static JSValue js_download(JSContext *ctx, JSValueConst this_val, int argc, JSVa
         if (*q == '\'') dstr_appendz(&p, "'\\''");
         else dstr_appendc(&p, *q);
     }
-    char cmd[5200];
-    snprintf(cmd, sizeof cmd, "curl -sS -m 60 -o '%s' '%s' >/dev/null 2>&1; echo $?",
+    /* 超时 20s；-w 输出 HTTP 状态码到固定文件；非 2xx 或空文件视为失败并删除残留 */
+    char cmd[5400];
+    snprintf(cmd, sizeof cmd,
+             "curl -sS -m 20 -o '%s' -w '%%{http_code}' '%s' > /tmp/lxpen_curl_code 2>/dev/null",
              p.buf ? p.buf : "", u.buf ? u.buf : "");
     dstr_free(&u);
     dstr_free(&p);
-    int rc = system(cmd);
-    (void)rc;
+    (void)system(cmd);
+    long code = 0;
+    FILE *cf = fopen("/tmp/lxpen_curl_code", "rb");
+    if (cf) {
+        char buf[16] = {0};
+        const size_t n = fread(buf, 1, sizeof buf - 1, cf);
+        fclose(cf);
+        buf[n] = 0;
+        code = strtol(buf, NULL, 10);
+    }
     struct stat st;
-    JSValue ret = JS_NewInt64(ctx, -1);
-    if (stat(path, &st) == 0 && st.st_size > 0) ret = JS_NewInt64(ctx, (int64_t)st.st_size);
+    int64_t ret = -1;
+    if (code >= 200 && code <= 299 && stat(path, &st) == 0 && st.st_size > 0) {
+        ret = (int64_t)st.st_size;
+    } else {
+        unlink(path);
+    }
     JS_FreeCString(ctx, url);
     JS_FreeCString(ctx, path);
-    return ret;
+    return JS_NewInt64(ctx, ret);
 }
 
 static JSValue js_file_exists(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -2339,6 +2355,7 @@ static void rpc_respond_ok(int id) {
 
 /* cmd 'quit' handled in main loop; other mpv commands answered immediately */
 static void handle_rpc_line(const char *line) {
+    g_last_cmd_ms = now_ms();
     JSValue v = JS_ParseJSON(g_ctx, line, strlen(line), "<rpc>");
     if (JS_IsException(v)) {
         JSValue ex = JS_GetException(g_ctx);
@@ -2720,6 +2737,13 @@ int main(int argc, char **argv) {
         }
 
         mpv_poll_props();
+
+        /* 兜底回收：10 分钟没有任何命令（页面已关、宿主已停）则自动退出，
+         * 避免孤儿 runner 常驻（正常使用中 QML watchdog 每 10s ping，不会触发） */
+        if (g_last_cmd_ms > 0 && now_ms() - g_last_cmd_ms > 10 * 60 * 1000) {
+            logline("info", "idle timeout, exit");
+            g_quit = 1;
+        }
 
         if (!g_inited && now_ms() > init_deadline) {
             out_enqueue("{\"event\":\"initFailed\",\"error\":\"script init timeout\"}");

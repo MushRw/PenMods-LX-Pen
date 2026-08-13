@@ -172,6 +172,20 @@ public:
         m_playAfterCache = false;
     }
 
+    /* 重开页面后恢复播放上下文：宿主仍在播上一首，恢复队列/接管/会话号，
+     * 让宿主上一首/下一首与自动连播在重开后继续可用。 */
+    Q_INVOKABLE void resumeQueue(const QVariantList& songs, int index) {
+        m_queue = QJsonArray::fromVariantList(songs);
+        if (index < 0 || index >= m_queue.size()) { m_index = -1; return; }
+        m_index = index;
+        m_takeover = true;
+        m_advanceHandled = false;
+        m_playStartedAt = QDateTime::currentMSecsSinceEpoch();
+        void* mpm = resolveTInstance(kYMediaPlayerManagerT);
+        m_ourSeq = mpm ? currentAudioSeq(mpm) : 0;
+        soLog("resumeQueue idx=" + QString::number(index) + " ourSeq=" + QString::number(m_ourSeq));
+    }
+
     Q_INVOKABLE void playIndex(int idx) {
         if (idx < 0 || idx >= m_queue.size()) {
             emit playError(QStringLiteral("队列为空或索引越界"));
@@ -230,14 +244,16 @@ public:
     }
 
     void handleSongEnded(uint32_t seq, uint32_t curEntry, int stateEntry) {
-        qint64 sinceStart = QDateTime::currentMSecsSinceEpoch() - m_playStartedAt;
+        qint64 sinceStart = m_playStartedAt > 0 ? QDateTime::currentMSecsSinceEpoch() - m_playStartedAt : -1;
         soLog("songEnded seq=" + QString::number(seq) + " cur=" + QString::number(curEntry) +
               " state=" + QString::number(stateEntry) + " sinceStart=" + QString::number(sinceStart) +
               "ms takeover=" + QString::number(m_takeover ? 1 : 0) + " ourSeq=" + QString::number(m_ourSeq));
         if (!m_takeover || m_playStartedAt <= 0) return; /* 未接管/切换中/未开播，忽略 */
         if (stateEntry != 0) return;      /* 非 PLAYING：手动停止/暂停触发，不连播 */
-        /* 结束事件必须是"我们当前会话"：seq==cur（当前会话结束）且 cur==m_ourSeq（会话属于本插件） */
-        if (seq != curEntry || curEntry != m_ourSeq) return;
+        /* 结束事件必须属于本插件启动的会话：seq==m_ourSeq。
+         * 注意宿主可能已在事件前推进当前会话号（实测真结束为 seq==m_ourSeq、cur==m_ourSeq+1），
+         * 因此只校验 seq，不要求 cur==seq。旧会话残留事件 seq<cur 会被此校验拦下。 */
+        if (seq != m_ourSeq) return;
         /* 播放开始 8 秒内的 onSoundEnd 视为误触发（宿主初始化/打断），忽略以免误切歌 */
         if (sinceStart < 8000) return;
         if (m_queue.size() == 0 || m_index < 0) return;
@@ -256,6 +272,11 @@ public:
         if (m_uiOpen || !m_takeover) return;
         if (isPlaying() || isPaused()) return;
         soLog("idle: host stopped & ui closed -> quit runner");
+        requestRunnerQuit();
+    }
+
+    /* 回收后台 runner 并释放资源（页面销毁/空闲监控共用） */
+    void requestRunnerQuit() {
         QJsonObject cmd;
         cmd.insert(QStringLiteral("cmd"), QStringLiteral("quit"));
         writeRpc(cmd);
@@ -791,6 +812,11 @@ void attach_engine(void* engine) {
 
 void destroy_plugin() {
     if (g_player) {
+        /* 页面销毁时若宿主已停止播放：回收 runner 并释放 MUSIC 锁；
+         * 宿主仍在播放则保留（后台续播需要 runner 解析后续链接）。 */
+        if (!g_player->isHostActive()) {
+            g_player->requestRunnerQuit();
+        }
         delete g_player;
         g_player = nullptr;
     }
