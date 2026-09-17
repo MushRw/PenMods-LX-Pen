@@ -257,10 +257,29 @@ public:
          * 注意宿主可能已在事件前推进当前会话号（实测真结束为 seq==m_ourSeq、cur==m_ourSeq+1），
          * 因此只校验 seq，不要求 cur==seq。旧会话残留事件 seq<cur 会被此校验拦下。 */
         if (seq != m_ourSeq) return;
-        /* 误触发过滤：原来固定 8 秒，导致时长 <8s 的歌播完永远不连播。
-         * 改成按实际时长取窗口（已知时长时取 min(8s, 时长/2)）：短歌能连播，
-         * 长歌仍是原来的 8 秒保守窗口；时长未知时退化为 8 秒。 */
-        const qint64 guardMs = (mDuration > 0) ? qMin<qint64>(8000, mDuration / 2) : 8000;
+        /* 误触发过滤：原来固定 8 秒 —— 时长 <8s 的歌播完永远不连播。
+         * 改成按当前曲目的时长收窄窗口（min(8s, 时长/2)）：短歌能连播，
+         * 长歌保持原来的 8 秒保守窗口。时长从队列对象里取，字段名可能是
+         * duration / interval / dt；值 <1000 视为秒（毫秒不可能小于 1 秒）。
+         * 取不到就沿用 8 秒，行为与以前一致。 */
+        qint64 durationMs = 0;
+        if (m_index >= 0 && m_index < m_queue.size()) {
+            const QJsonObject song = m_queue.at(m_index).toObject();
+            const char* keys[] = {"duration", "interval", "dt"};
+            for (const char* key : keys) {
+                const QJsonValue v = song.value(QString::fromLatin1(key));
+                if (v.isDouble()) {
+                    const double raw = v.toDouble();
+                    durationMs = (raw > 0 && raw < 1000) ? (qint64)(raw * 1000.0) : (qint64)raw;
+                    break;
+                }
+            }
+        }
+        qint64 guardMs = 8000;
+        if (durationMs > 0) {
+            const qint64 half = durationMs / 2;
+            if (half > 0 && half < 8000) guardMs = half;
+        }
         if (sinceStart < guardMs) return;
         if (m_queue.size() == 0 || m_index < 0) return;
         /* 宿主自身 onSoundEnd 已通过 onClickedNext 推进过队列，避免二次推进 */
