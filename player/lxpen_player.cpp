@@ -257,8 +257,11 @@ public:
          * 注意宿主可能已在事件前推进当前会话号（实测真结束为 seq==m_ourSeq、cur==m_ourSeq+1），
          * 因此只校验 seq，不要求 cur==seq。旧会话残留事件 seq<cur 会被此校验拦下。 */
         if (seq != m_ourSeq) return;
-        /* 播放开始 8 秒内的 onSoundEnd 视为误触发（宿主初始化/打断），忽略以免误切歌 */
-        if (sinceStart < 8000) return;
+        /* 误触发过滤：原来固定 8 秒，导致时长 <8s 的歌播完永远不连播。
+         * 改成按实际时长取窗口（已知时长时取 min(8s, 时长/2)）：短歌能连播，
+         * 长歌仍是原来的 8 秒保守窗口；时长未知时退化为 8 秒。 */
+        const qint64 guardMs = (mDuration > 0) ? qMin<qint64>(8000, mDuration / 2) : 8000;
+        if (sinceStart < guardMs) return;
         if (m_queue.size() == 0 || m_index < 0) return;
         /* 宿主自身 onSoundEnd 已通过 onClickedNext 推进过队列，避免二次推进 */
         if (m_advanceHandled) { m_advanceHandled = false; return; }
@@ -349,14 +352,31 @@ private:
 
     bool writeRpc(const QJsonObject& obj) {
         const QByteArray payload = QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
-        int fd = ::open(kRunnerInFifo, O_WRONLY | O_NONBLOCK);
-        if (fd < 0) {
-            soLog("fifo open failed errno=" + QString::number(errno));
-            return false;
+        /* FIFO 是非阻塞写：EAGAIN / 部分写以前直接丢命令，runner 收不到就会
+         * 一路卡到 RPC 超时（实测 20~40s）。改成带退避的重试，保证命令送达。 */
+        const int kAttempts = 20;
+        for (int attempt = 0; attempt < kAttempts; ++attempt) {
+            int fd = ::open(kRunnerInFifo, O_WRONLY | O_NONBLOCK);
+            if (fd < 0) {
+                if (attempt == 0) {
+                    soLog("fifo open failed errno=" + QString::number(errno) + "（重试中）");
+                }
+                ::usleep(50 * 1000);
+                continue;
+            }
+            const ssize_t w = ::write(fd, payload.constData(), payload.size());
+            ::close(fd);
+            if (w == (ssize_t)payload.size()) {
+                return true;
+            }
+            if (attempt == 0) {
+                soLog("fifo short write w=" + QString::number((long)w) +
+                      " errno=" + QString::number(errno) + "（重试中）");
+            }
+            ::usleep(50 * 1000);
         }
-        const ssize_t w = ::write(fd, payload.constData(), payload.size());
-        ::close(fd);
-        return w == (ssize_t)payload.size();
+        soLog("fifo write failed after retries,命令可能丢失");
+        return false;
     }
 
     /* ---- 歌曲缓存（在线直连播放的同时后台下载，LRU 保持 10 首） ---- */
