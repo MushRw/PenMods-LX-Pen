@@ -42,7 +42,11 @@ Rectangle {
     property var downloads: []
     property bool downloading: false
     property var scriptList: []
-    property string selectedScript: "lx-source.js"
+    /* 内置默认音源：官方 v4 已过期（服务端提示"版本过低 v6"），换为 v6 修复版 */
+    property string defaultScript: "lx-music-source-v6.js"
+    property string selectedScript: "lx-music-source-v6.js"
+    /* 用户音源目录：放在文件管理器根目录下，可随时用笔上文件管理器替换，插件升级不覆盖 */
+    property string userScriptDir: "/userdisk/Music/lx-sources"
     property var scriptSources: ({})
     property bool scriptReady: false
     property string scriptError: ""
@@ -290,7 +294,7 @@ Rectangle {
                 if (scriptList[k].file === selectedScript) { ok = true; break }
             }
             if (!ok) {
-                selectedScript = "lx-source.js"
+                selectedScript = defaultScript
                 saveSettings()
             }
         }
@@ -299,8 +303,13 @@ Rectangle {
         // 词典笔缺 gconv 模块，先铺 GB18030 到 /tmp/gconv 并设 GCONV_PATH（否则 kw 歌词 iconv 失败）
         shell.exec("mkdir -p /tmp/gconv; cp -f '" + pluginDir + "/gconv/GB18030.so' '" + pluginDir + "/gconv/GBK.so' '" + pluginDir + "/gconv/gconv-modules' /tmp/gconv/ 2>/dev/null; true")
         shell.exec("pkill -9 penmusic 2>/dev/null; sleep 1; rm -f " + inFifo + " " + outFile + " " + mpvSock + "; mkfifo " + inFifo + "; touch " + outFile + "; true")
-        var script = String(selectedScript).replace(/[^A-Za-z0-9_.-]/g, "")
-        var cmd = "GCONV_PATH=/tmp/gconv nohup " + pluginDir + "/bin/penmusic --script '" + pluginDir + "/scripts/" + script +
+        var scriptPath = scriptPathFor(selectedScript)
+        if (!scriptPath) scriptPath = pluginDir + "/scripts/" + defaultScript
+        if (shell.exec("test -f '" + scriptPath + "' && echo 1 || echo 0").trim() !== "1") {
+            pushLog("error", "音源脚本不存在: " + selectedScript)
+            return
+        }
+        var cmd = "GCONV_PATH=/tmp/gconv nohup " + pluginDir + "/bin/penmusic --script '" + scriptPath +
                   "' --js-dir '" + pluginDir + "/js' --in " + inFifo + " --out " + outFile +
                   " > /tmp/lxpen.log 2>&1 &"
         shell.startDetached(cmd)
@@ -598,27 +607,53 @@ Rectangle {
     }
 
     /* ---------- 脚本扫描 ---------- */
+    /* 音源脚本两处来源：用户目录（优先，持久、可用文件管理器替换、插件升级不覆盖）
+       与内置 scripts/（兜底）。同名文件以用户目录为准。 */
     function scanScripts() {
-        var out = shell.exec("ls -1 '" + pluginDir + "/scripts/'*.js 2>/dev/null; true")
         var list = []
-        if (out) {
+        var seen = ({})
+        var dirs = [ { dir: userScriptDir, builtin: false }, { dir: pluginDir + "/scripts", builtin: true } ]
+        for (var d = 0; d < dirs.length; d++) {
+            var out = shell.exec("ls -1 '" + dirs[d].dir + "'/*.js 2>/dev/null; true")
+            if (!out) continue
             var names = out.split("\n")
             for (var i = 0; i < names.length; i++) {
                 var n = names[i].trim()
                 if (!n) continue
                 var base = n.replace(/^.*\//, "")
                 if (!/\.js$/.test(base)) continue
-                var head = shell.exec("head -c 800 '" + pluginDir + "/scripts/" + base + "'")
+                if (seen[base]) continue
+                seen[base] = true
+                var path = dirs[d].dir + "/" + base
+                var head = shell.exec("head -c 800 '" + path + "'")
                 var name = ""
                 var ver = ""
                 var m = head.match(/@name\s+([^\n*]+)/)
                 if (m) name = m[1].trim()
                 m = head.match(/@version\s+([^\n*]+)/)
                 if (m) ver = m[1].trim()
-                list.push({ file: base, name: name || base, version: ver })
+                list.push({ file: base, path: path, name: name || base, version: ver, builtin: dirs[d].builtin })
             }
         }
         scriptList = list
+    }
+
+    /* 选中脚本的实际路径：用户目录优先，内置兜底；文件名做白名单过滤防注入 */
+    function scriptPathFor(file) {
+        var safe = String(file).replace(/[^A-Za-z0-9_.-]/g, "")
+        if (!safe) return ""
+        var up = userScriptDir + "/" + safe
+        if (shell.exec("test -f '" + up + "' && echo 1 || echo 0").trim() === "1") return up
+        return pluginDir + "/scripts/" + safe
+    }
+
+    /* 首次运行：建用户音源目录并放一份示例模板（用户复制改名即可） */
+    function ensureUserScriptDir() {
+        shell.exec("mkdir -p '" + userScriptDir + "'; true")
+        var ex = userScriptDir + "/example-kw-source.js"
+        if (shell.exec("test -f '" + ex + "' && echo 1 || echo 0").trim() !== "1") {
+            shell.exec("cp -f '" + pluginDir + "/scripts/example-kw-source.js' '" + ex + "' 2>/dev/null; true")
+        }
     }
 
     /* ---------- 页面 ---------- */
@@ -707,6 +742,7 @@ Rectangle {
                 pushLog("info", "已恢复播放上下文 idx=" + restoreIndex)
             } catch (e) { pushLog("warn", "恢复播放上下文失败") }
         }
+        ensureUserScriptDir()
         scanScripts()
         // 设置的音源脚本不存在时回退默认（防止旧设置/被删脚本导致 runner 用错音源）
         var scriptFound = false
@@ -717,7 +753,7 @@ Rectangle {
         }
         shell.exec("echo 'scripts=" + scriptNames.join(",") + " selected=" + selectedScript + " found=" + scriptFound + "' >> /tmp/lxpen_qml.log")
         if (!scriptFound) {
-            selectedScript = "lx-source.js"
+            selectedScript = defaultScript
             saveSettings()
             pushLog("warn", "音源脚本不存在，已重置为默认")
         }

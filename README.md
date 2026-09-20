@@ -29,7 +29,7 @@ lx-pen/
 │   │   ├── lx-shim.js       #   lx 音源脚本协议 v2.0.0 shim + Node 兼容层
 │   │   ├── normalize.js     #   lx 结果 -> 插件字段归一化
 │   │   └── runtime.js       #   FIFO JSON-RPC 桥（search/lyric/download/script...）
-│   ├── scripts/             # 用户音源脚本（当前仅酷我 lx-source.js 实测可用）
+│   ├── scripts/             # 内置音源脚本（用户目录不存在时的兜底）
 │   ├── gconv/               # GB18030/GBK iconv 模块（酷我歌词解码用）
 │   └── bin/penmusic         # QuickJS runner（aarch64 交叉编译）
 ├── player/                  # lxpen_player.cpp -> liblxpen_player.so（宿主播放器接管）
@@ -75,7 +75,15 @@ tag `v*` 会自动发布 Release（产物 `lx-pen.zip`）。
 1. 解压 `lx-pen.zip`，把 `lx-pen/` 放到词典笔 `/userdisk/PenMods/plugins/`；
 2. `chmod +x /userdisk/PenMods/plugins/lx-pen/bin/penmusic`；
 3. 清理 QML 缓存：`rm -rf /.cache/NeteaseYoudao/YoudaoDictPen/qmlcache` 后重启 App（守护进程会自动拉起）；
-4. 插件管理器启用「LX Pen」，设置页确认音源脚本为 `lx-source.js`。
+4. 插件管理器启用「LX Pen」，设置页确认音源脚本为 `lx-music-source-v6.js`。
+
+### 音源目录（重要）
+
+- **用户音源目录：`/userdisk/Music/lx-sources/`**（文件管理器根目录下，插件启动时自动创建并放一份
+  `example-kw-source.js` 模板）。放进去的 `.js` 立刻出现在设置页列表，标记为「用户」；
+  同名文件优先于内置脚本，插件升级/重装不会覆盖它，换音源不需要重新打包部署。
+- **内置目录：`/userdisk/PenMods/plugins/lx-pen/scripts/`**，仅作兜底，升级会被覆盖。
+- 用户目录删除当前选中脚本时，插件回落到内置默认脚本并在日志提示。
 
 ## RPC 接口（runner）
 
@@ -83,8 +91,10 @@ tag `v*` 会自动发布 Release（产物 `lx-pen.zip`）。
 
 ## 已知限制
 
-- **音源**：当前提供酷我音源脚本（`lx-source.js`，搜索、320k 完整版、歌词、下载全通）；
-  音源脚本由用户提供，放入 `scripts/` 后可在设置页选择。
+- **音源**：内置 4 个脚本（`lx-music-source-v6.js` 默认 / `kxh-1.7.17.js` / `molan-2.2.0.js` /
+  `xinghai-2.3.11.js`），均已在词典笔上实测：加载 → 酷我搜索 → `musicUrl` → 下载全通。
+  过期的官方 v4（`lx-source.js`，服务端返回「版本过低 v6」）与取不到 URL 的 `sixyin.js` 已移除。
+  音源随时会过期：把新脚本丢进 `/userdisk/Music/lx-sources/` 即可替换，不必重新打包插件。
 - **自动连播依赖宿主**：播完自动切歌由宿主播放器的 `onSoundEnd → onClickedNext` 机制驱动，
   插件只负责推进队列；若宿主行为变化，连播可能失效（8 秒防误触与会话号校验已尽量兼容）。
 - **歌词**：酷我歌词走原生 glibc iconv（GB18030），插件自带 gconv 模块到 `/tmp/gconv`；

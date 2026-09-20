@@ -34,6 +34,13 @@ Item {
                 font.pixelSize: Theme.pxSmall
                 font.bold: true
             }
+            Text {
+                width: parent.width
+                text: "用户目录 /userdisk/Music/lx-sources（同名优先，可用文件管理器直接替换）"
+                color: Theme.textSub
+                font.pixelSize: Theme.pxTiny
+                elide: Text.ElideRight
+            }
 
             Repeater {
                 model: root.scriptList
@@ -46,12 +53,20 @@ Item {
                     border.width: 1
                     Text {
                         anchors.left: parent.left; anchors.leftMargin: 10
+                        anchors.right: badge.left; anchors.rightMargin: 6
                         anchors.verticalCenter: parent.verticalCenter
                         text: modelData.name + (modelData.version ? "  v" + modelData.version : "")
                         color: root.selectedScript === modelData.file ? "#FFFFFF" : Theme.text
                         font.pixelSize: Theme.pxSmall
                         elide: Text.ElideRight
-                        width: parent.width - 20
+                    }
+                    Text {
+                        id: badge
+                        anchors.right: parent.right; anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.builtin ? "内置" : "用户"
+                        color: root.selectedScript === modelData.file ? "#FFFFFF" : Theme.textSub
+                        font.pixelSize: Theme.pxTiny
                     }
                     MouseArea {
                         anchors.fill: parent
