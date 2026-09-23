@@ -70,10 +70,17 @@ async function handleDownload(req) {
   const url = String(req.url || '');
   const path = String(req.path || '');
   if (!url || !path) throw new Error('empty url/path');
-  /* 用系统 curl（busybox，2s 下完 5MB；libcurl 传输慢 30 倍） */
+  /* C 层已保证"传输完整"才算成功（curl 退出码 0 + 2xx + size_download == 落盘大小）。
+   * expected（音源给的期望字节数）是第二道校验：对不上说明被截断或下到了别的东西，
+   * 抛错让调用方删文件重试，绝不能报"下载完成"。 */
+  const expected = parseInt(req.expected, 10) || 0;
+  const tol = req.tolerance ? Number(req.tolerance) : 0.05;
   const size = native.download(url, path);
   if (typeof size !== 'number' || size < 0) throw new Error('download failed');
-  return { path, size };
+  if (expected > 0 && Math.abs(size - expected) > expected * tol) {
+    throw new Error('incomplete download ' + size + '/' + expected + ' bytes');
+  }
+  return { path, size, expected: expected || size };
 }
 
 async function handlePic(req) {

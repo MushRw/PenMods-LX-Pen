@@ -17,6 +17,8 @@
 #include <QJsonParseError>
 #include <QCryptographicHash>
 #include <QObject>
+#include <QRegularExpression>
+#include <QStringList>
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QString>
@@ -102,7 +104,9 @@ static const char* kOnClickedPrev = "_ZN19YMediaPlayerManager13onClickedPrevEb";
 
 static const char* kRunnerInFifo = "/tmp/lxpen_in";
 static const char* kMusicLockFile = "/tmp/audio_wakelocks/MUSIC.lock";
-static const char* kCacheDir = "/tmp/lxpen_cache";
+/* 播放缓存放 /userdisk（eMMC）而不是 /tmp：词典笔 /tmp 是 tmpfs（230MB 内存池），
+ * 既占内存又重启即丢（旧版重启后缓存全废、每次播放都要重新直连 CDN）。 */
+static const char* kCacheDir = "/userdisk/Music/LX-Pen-cache";
 static const int kCacheMaxFiles = 10;
 
 /* 读取宿主 YMediaPlayerManager 当前音频会话序号（对齐 MusicPlayer 的判断：
@@ -112,6 +116,93 @@ static uint32_t currentAudioSeq(void* self) {
     uintptr_t inner = *(uintptr_t*)((char*)self + 32);
     if (!inner) return 0;
     return *(uint32_t*)(inner + 100);
+}
+
+/* ---------------- 缓存完整性 ----------------
+ * 完成标记 <file>.ok 内容为 "<字节数> <音质>"：只有标记与文件大小一致才算可信缓存。
+ * 旧版只按 ">100KB" 判断，弱网下被截断的文件会被永久当成有效缓存反复播放。 */
+static QString cacheMarkerFor(const QString& path) { return path + QStringLiteral(".ok"); }
+
+static bool cacheMarkerMatches(const QString& path) {
+    QFileInfo fi(path);
+    const QFileInfo mk(cacheMarkerFor(path));
+    if (!fi.exists() || !mk.exists() || fi.size() <= 0) return false;
+    QFile mf(cacheMarkerFor(path));
+    if (!mf.open(QIODevice::ReadOnly)) return false;
+    const QStringList parts = QString::fromUtf8(mf.readAll()).trimmed().split(QLatin1Char(' '));
+    mf.close();
+    if (parts.isEmpty()) return false;
+    return parts.at(0).toLongLong() == fi.size();
+}
+
+static void writeCacheMarker(const QString& path, const QString& quality) {
+    QFileInfo fi(path);
+    QFile mf(cacheMarkerFor(path));
+    if (fi.exists() && mf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        mf.write(QString::number(fi.size()).toUtf8() + " " + quality.toUtf8() + "\n");
+        mf.close();
+    }
+}
+
+/* 可信缓存：>100KB 且带完成标记 */
+static bool cacheHit(const QString& path) {
+    QFileInfo fi(path);
+    if (!fi.exists() || fi.size() <= 102400) return false;
+    return cacheMarkerMatches(path);
+}
+
+/* 音源返回的 types/_types 带期望大小（"10.29MB"/"4.12Mb"）→ 字节数；解析不出返回 0 */
+static qint64 expectedBytesFor(const QJsonObject& song, const QString& quality) {
+    QString s;
+    const QJsonArray arr = song.value(QStringLiteral("types")).toArray();
+    for (const QJsonValue& v : arr) {
+        const QJsonObject o = v.toObject();
+        if (o.value(QStringLiteral("type")).toString() == quality) {
+            s = o.value(QStringLiteral("size")).toString();
+            break;
+        }
+    }
+    if (s.isEmpty()) {
+        s = song.value(QStringLiteral("_types")).toObject()
+              .value(quality).toObject().value(QStringLiteral("size")).toString();
+    }
+    if (s.isEmpty()) return 0;
+    static const QRegularExpression re(QStringLiteral("([0-9.]+)\\s*([KMG]?)"),
+                                       QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch m = re.match(s);
+    if (!m.hasMatch()) return 0;
+    const double n = m.captured(1).toDouble();
+    if (!(n > 0)) return 0;
+    const QString u = m.captured(2).toUpper();
+    const double mul = u == QLatin1String("K") ? 1024.0
+                     : u == QLatin1String("M") ? 1048576.0
+                     : u == QLatin1String("G") ? 1073741824.0 : 1.0;
+    return (qint64)(n * mul);
+}
+
+/* 启动时清掉不可信缓存：无完成标记的 .mp3（旧版半截文件）、.part、孤儿 .ok */
+static void cleanInvalidCache() {
+    QDir dir(QString::fromLatin1(kCacheDir));
+    if (!dir.exists()) return;
+    int removed = 0;
+    const QFileInfoList files = dir.entryInfoList(
+        QStringList() << QStringLiteral("*.mp3") << QStringLiteral("*.part") << QStringLiteral("*.ok"),
+        QDir::Files);
+    for (const QFileInfo& fi : files) {
+        const QString fp = fi.absoluteFilePath();
+        bool drop;
+        if (fp.endsWith(QLatin1String(".part"))) {
+            drop = true;
+        } else if (fp.endsWith(QLatin1String(".ok"))) {
+            QString base = fp;
+            base.chop(3);
+            drop = !QFileInfo::exists(base);
+        } else {
+            drop = !cacheMarkerMatches(fp);
+        }
+        if (drop && QFile::remove(fp)) removed++;
+    }
+    if (removed > 0) qInfo() << "[lxpen] cleaned invalid cache files:" << removed;
 }
 
 /* 词典笔音频守护进程通过 /tmp/audio_wakelocks/<源>.lock 判断音频输出占用：
@@ -345,6 +436,7 @@ signals:
     void songEnded();
     void songStarted(int index);
     void playError(const QString& message);
+    void cacheWaiting(const QString& message);
 
 private:
     enum class Step { Idle, GetUrl, GetLyric, Download, PlayFile, Online, WaitPlaying, CheckCache };
@@ -398,16 +490,14 @@ private:
         return false;
     }
 
-    /* ---- 歌曲缓存（在线直连播放的同时后台下载，LRU 保持 10 首） ---- */
+    /* ---- 歌曲缓存（在线直连播放的同时后台下载，LRU 保持 10 首） ----
+     * 文件名带音质：同一首歌换音质时不会复用旧码率的缓存 */
     QString cachePathFor() {
+        const QString key = m_currentSong.value(QStringLiteral("songmid")).toString()
+                          + QLatin1Char('|') + m_quality;
         const QString safeId = QString::fromLatin1(QCryptographicHash::hash(
-            m_currentSong.value(QStringLiteral("songmid")).toString().toUtf8(), QCryptographicHash::Md5).toHex());
+            key.toUtf8(), QCryptographicHash::Md5).toHex());
         return QString::fromLatin1(kCacheDir) + QStringLiteral("/lxpen_") + safeId + QStringLiteral(".mp3");
-    }
-
-    static bool cacheHit(const QString& path) {
-        QFileInfo fi(path);
-        return fi.exists() && fi.size() > 102400; /* >100KB 视为有效缓存 */
     }
 
     void startCacheDownload() {
@@ -423,6 +513,9 @@ private:
         cmd.insert(QStringLiteral("cmd"), QStringLiteral("download"));
         cmd.insert(QStringLiteral("url"), m_currentUrl);
         cmd.insert(QStringLiteral("path"), m_cachePath);
+        /* 期望字节数：runner 侧据此校验（±5%），避免"只下了一半也算成功" */
+        const qint64 expectBytes = expectedBytesFor(m_currentSong, m_quality);
+        if (expectBytes > 0) cmd.insert(QStringLiteral("expected"), (double)expectBytes);
         m_cacheSeq++;
         cmd.insert(QStringLiteral("id"), m_cacheSeq);
         cmd.insert(QStringLiteral("respPath"), m_cacheRespPath);
@@ -457,9 +550,28 @@ private:
             }
             m_cacheBusy = false;
             m_cacheTimer->stop();
-            const bool ok = obj.value(QStringLiteral("ok")).toBool();
-            soLog(ok ? "cache download ok: " + m_cachePath : "cache download failed");
-            if (ok) pruneCache();
+            const bool rpcOk = obj.value(QStringLiteral("ok")).toBool();
+            const QJsonObject rdata = obj.value(QStringLiteral("data")).toObject();
+            const qint64 gotSize = (qint64)rdata.value(QStringLiteral("size")).toDouble();
+            const qint64 expectSize = expectedBytesFor(m_currentSong, m_quality);
+            /* 双保险：runner 已按 expected 校验过，这里再核一次大小 */
+            bool ok = rpcOk && gotSize > 102400;
+            if (ok && expectSize > 0 && qAbs(gotSize - expectSize) > expectSize / 20) {
+                soLog("cache size mismatch got=" + QString::number(gotSize)
+                      + " expect=" + QString::number(expectSize));
+                ok = false;
+            }
+            if (ok) {
+                writeCacheMarker(m_cachePath, m_quality);
+                soLog("cache download ok: " + m_cachePath);
+                pruneCache();
+            } else {
+                /* 不完整就地清掉：不能让半截文件冒充缓存（下次播放会直接命中它） */
+                QFile::remove(m_cachePath);
+                QFile::remove(m_cachePath + QStringLiteral(".part"));
+                QFile::remove(cacheMarkerFor(m_cachePath));
+                soLog("cache download failed");
+            }
             if (ok && m_playAfterCache) {
                 m_playAfterCache = false;
                 m_currentPath = m_cachePath;
@@ -616,6 +728,7 @@ private:
                 soLog("online did not play");
                 if (m_cacheBusy) {
                     /* 宿主在线播放不支持：等缓存下载完成后再播本地文件 */
+                    emit cacheWaiting(QStringLiteral("网络较慢，正在缓存后播放"));
                     soLog("wait cache then play file");
                     m_playAfterCache = true;
                     m_step = Step::Idle;
@@ -846,6 +959,8 @@ void init_plugin() {
 
 void init_plugin_with_hook_api(PluginHookAPI* api) {
     g_hook_api = api;
+    /* 清掉旧版留下的不可信缓存（无完成标记的半截文件、.part、孤儿标记） */
+    cleanInvalidCache();
     if (!g_player) g_player = new LxPenPlayer();
     if (g_hook_api && g_hook_api->querySymbol && g_hook_api->hookFunction) {
         void* addr = g_hook_api->querySymbol(kOnSoundEnd);

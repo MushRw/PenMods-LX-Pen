@@ -2192,8 +2192,77 @@ static JSValue js_file_write(JSContext *ctx, JSValueConst this_val, int argc, JS
     return JS_NewBool(ctx, ok);
 }
 
-/* 下载文件：用系统 curl（busybox curl 下载 5MB 约 2s，libcurl 慢 30 倍）。
- * 返回文件字节数；失败返回 -1。 */
+/* 下载文件：用系统 curl（词典笔自带完整版 curl 7.58，比 libcurl 快得多）。
+ * 必须"整个传输完成"才算成功 —— 三条同时满足：
+ *   1) curl 退出码 == 0（超时 28 / 部分传输 18 / 连接中断 等一律算失败）
+ *   2) HTTP 状态 2xx
+ *   3) -w 报告的 size_download 与实际落盘字节数一致
+ * 旧实现只看 -w 的 http_code：弱网被 -m 20 掐断时 curl 早就拿到 200，
+ * 于是半个文件也被当成成功返回，上层据此写"下载完成"、还把它当成有效缓存。
+ * 落盘先写 <path>.part，校验通过才 rename 到目标名，半截文件不会冒充完整文件。
+ * 首次尝试带 -C - 断点续传；失败则删掉 .part 从零重下一次（兼容不支持 Range 的服务器）。
+ * 返回文件字节数；失败返回 -1（此时可能留下 .part 供下次续传）。 */
+static int64_t do_curl_download(const char *url, const char *path) {
+    const size_t plen = strlen(path);
+    char *part = (char *)malloc(plen + 8);
+    if (!part) return -1;
+    memcpy(part, path, plen);
+    memcpy(part + plen, ".part", 6);
+
+    const char *resume = "-C - ";
+    int64_t ret = -1;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        Dstr u, p;
+        dstr_init(&u);
+        dstr_init(&p);
+        for (const char *q = url; *q; q++) {
+            if (*q == '\'') dstr_appendz(&u, "'\\''");
+            else dstr_appendc(&u, *q);
+        }
+        for (const char *q = part; *q; q++) {
+            if (*q == '\'') dstr_appendz(&p, "'\\''");
+            else dstr_appendc(&p, *q);
+        }
+        char cmd[5400];
+        snprintf(cmd, sizeof cmd,
+                 "curl -sS --fail --location --connect-timeout 5 "
+                 "--speed-limit 1024 --speed-time 20 --retry 2 --retry-delay 1 "
+                 "%s-m 300 -o '%s' -w '%%{http_code} %%{size_download}' '%s' "
+                 "> /tmp/lxpen_curl_code 2>/dev/null; echo \" $?\" >> /tmp/lxpen_curl_code",
+                 resume, p.buf ? p.buf : "", u.buf ? u.buf : "");
+        dstr_free(&u);
+        dstr_free(&p);
+        (void)system(cmd);
+
+        long http = -1;
+        long long dl = -1;
+        int ec = -1;
+        FILE *cf = fopen("/tmp/lxpen_curl_code", "rb");
+        if (cf) {
+            char buf[64] = {0};
+            const size_t n = fread(buf, 1, sizeof buf - 1, cf);
+            fclose(cf);
+            buf[n] = 0;
+            (void)sscanf(buf, "%ld %lld %d", &http, &dl, &ec);
+        }
+        struct stat st;
+        if (ec == 0 && http >= 200 && http <= 299 && dl > 0 &&
+            stat(part, &st) == 0 && (long long)st.st_size == dl) {
+            if (rename(part, path) == 0) {
+                ret = dl;
+                break;
+            }
+        }
+        if (attempt == 0) {
+            /* 可能是服务器不支持 Range（续传被拒）→ 删掉 .part 从零重来一次 */
+            unlink(part);
+            resume = "";
+        }
+    }
+    free(part);
+    return ret;
+}
+
 static JSValue js_download(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     const char *url = argc > 0 ? JS_ToCString(ctx, argv[0]) : NULL;
@@ -2203,41 +2272,7 @@ static JSValue js_download(JSContext *ctx, JSValueConst this_val, int argc, JSVa
         if (path) JS_FreeCString(ctx, path);
         return JS_NewInt64(ctx, -1);
     }
-    Dstr u, p;
-    dstr_init(&u);
-    dstr_init(&p);
-    for (const char *q = url; *q; q++) {
-        if (*q == '\'') dstr_appendz(&u, "'\\''");
-        else dstr_appendc(&u, *q);
-    }
-    for (const char *q = path; *q; q++) {
-        if (*q == '\'') dstr_appendz(&p, "'\\''");
-        else dstr_appendc(&p, *q);
-    }
-    /* 超时 20s；-w 输出 HTTP 状态码到固定文件；非 2xx 或空文件视为失败并删除残留 */
-    char cmd[5400];
-    snprintf(cmd, sizeof cmd,
-             "curl -sS -m 20 -o '%s' -w '%%{http_code}' '%s' > /tmp/lxpen_curl_code 2>/dev/null",
-             p.buf ? p.buf : "", u.buf ? u.buf : "");
-    dstr_free(&u);
-    dstr_free(&p);
-    (void)system(cmd);
-    long code = 0;
-    FILE *cf = fopen("/tmp/lxpen_curl_code", "rb");
-    if (cf) {
-        char buf[16] = {0};
-        const size_t n = fread(buf, 1, sizeof buf - 1, cf);
-        fclose(cf);
-        buf[n] = 0;
-        code = strtol(buf, NULL, 10);
-    }
-    struct stat st;
-    int64_t ret = -1;
-    if (code >= 200 && code <= 299 && stat(path, &st) == 0 && st.st_size > 0) {
-        ret = (int64_t)st.st_size;
-    } else {
-        unlink(path);
-    }
+    const int64_t ret = do_curl_download(url, path);
     JS_FreeCString(ctx, url);
     JS_FreeCString(ctx, path);
     return JS_NewInt64(ctx, ret);

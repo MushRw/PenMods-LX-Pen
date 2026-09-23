@@ -436,15 +436,37 @@ Rectangle {
     }
 
     /* ---------- 下载 ---------- */
+    /* 从音源返回的 types / _types 取期望字节数（形如 "10.29MB" / "4.12Mb"）；解析不出返回 0 */
+    function expectedBytes(song, q) {
+        if (!song) return 0
+        var s = ""
+        var list = song.types
+        if (list && list.length) {
+            for (var i = 0; i < list.length; i++) {
+                if (String(list[i].type) === q) { s = String(list[i].size || ""); break }
+            }
+        }
+        if (!s && song._types && song._types[q]) s = String(song._types[q].size || "")
+        var m = s.match(/([0-9.]+)\s*([KMG]?)/i)
+        if (!m) return 0
+        var n = parseFloat(m[1])
+        if (!(n > 0)) return 0
+        var u = String(m[2] || "").toUpperCase()
+        var mul = u === "K" ? 1024 : (u === "M" ? 1048576 : (u === "G" ? 1073741824 : 1))
+        return Math.round(n * mul)
+    }
+
     function downloadSong(song) {
         if (!song || !song.name) return
         if (downloading) {
-            toast.show("正在下载其他歌曲", 2000)
+            toast.show("已有下载任务", 2000)
             return
         }
         downloading = true
         toast.show("获取链接...", 1500)
-        rpcSend({ cmd: "script", source: song.source || platform, action: "musicUrl", info: { type: quality, musicInfo: song } }, function(res) {
+        var q = quality
+        var expect = expectedBytes(song, q)
+        rpcSend({ cmd: "script", source: song.source || platform, action: "musicUrl", info: { type: q, musicInfo: song } }, function(res) {
             if (!res.ok) {
                 downloading = false
                 toast.show("获取链接失败", 3000)
@@ -455,17 +477,30 @@ Rectangle {
             var safe = String(song.name).replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 40)
             var safe2 = String(song.singer || "").replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 20)
             var path = dir + "/" + (safe || "song") + (safe2 ? "-" + safe2 : "") + ".mp3"
-            toast.show("下载中...", 1500)
-            rpcSend({ cmd: "download", url: res.data, path: path }, function(res2) {
-                downloading = false
-                if (res2.ok && res2.data && res2.data.size >= 102400) {
-                    addDownload({ name: song.name, singer: song.singer || "", path: path, size: res2.data.size, time: new Date().toISOString() })
-                    toast.show("已下载", 2000)
-                } else {
-                    shell.exec("rm -f '" + path + "'")
-                    toast.show("下载失败", 3000)
-                }
-            }, 90000)
+
+            /* 失败重试一次；只有"大小对得上"才算下载完成（下载超时放宽到 5 分钟以上，
+             * 覆盖弱网 + curl 侧 --speed-time 的判定窗口） */
+            var tryDownload = function(attempt) {
+                toast.show(attempt === 0 ? "下载中..." : "重试中...", 1500)
+                rpcSend({ cmd: "download", url: res.data, path: path, expected: expect }, function(res2) {
+                    var ok = res2.ok && res2.data && res2.data.size >= 102400
+                    if (ok && expect > 0 && Math.abs(res2.data.size - expect) > expect * 0.05) ok = false
+                    if (!ok && attempt < 1) {
+                        shell.exec("rm -f '" + path + "' '" + path + ".part"'")
+                        tryDownload(1)
+                        return
+                    }
+                    downloading = false
+                    if (ok) {
+                        addDownload({ name: song.name, singer: song.singer || "", path: path, size: res2.data.size, time: new Date().toISOString() })
+                        toast.show("下载完成", 2000)
+                    } else {
+                        shell.exec("rm -f '" + path + "' '" + path + ".part"'")
+                        toast.show(expect > 0 ? "下载不完整，已放弃" : "下载失败", 3000)
+                    }
+                }, 320000)
+            }
+            tryDownload(0)
         }, 20000)
     }
 
@@ -712,6 +747,9 @@ Rectangle {
         }
         function onPlayError(msg) {
             root.toast.show(msg, 3000)
+        }
+        function onCacheWaiting(msg) {
+            root.toast.show(msg, 2500)
         }
     }
 
