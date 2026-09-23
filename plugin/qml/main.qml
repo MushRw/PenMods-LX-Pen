@@ -486,7 +486,7 @@ Rectangle {
                     var ok = res2.ok && res2.data && res2.data.size >= 102400
                     if (ok && expect > 0 && Math.abs(res2.data.size - expect) > expect * 0.05) ok = false
                     if (!ok && attempt < 1) {
-                        shell.exec("rm -f '" + path + "' '" + path + ".part"'")
+                        shell.exec("rm -f '" + path + "' '" + path + ".part'")
                         tryDownload(1)
                         return
                     }
@@ -495,7 +495,7 @@ Rectangle {
                         addDownload({ name: song.name, singer: song.singer || "", path: path, size: res2.data.size, time: new Date().toISOString() })
                         toast.show("下载完成", 2000)
                     } else {
-                        shell.exec("rm -f '" + path + "' '" + path + ".part"'")
+                        shell.exec("rm -f '" + path + "' '" + path + ".part'")
                         toast.show(expect > 0 ? "下载不完整，已放弃" : "下载失败", 3000)
                     }
                 }, 320000)
