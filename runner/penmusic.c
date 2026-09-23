@@ -2224,6 +2224,11 @@ static int64_t do_curl_download(const char *url, const char *path) {
             else dstr_appendc(&p, *q);
         }
         char cmd[5400];
+        /* 续传时 %{size_download} 只统计"本次"传输的字节，而 .part 里还有上次的部分，
+         * 所以先记下续传起点，校验时用 off_before + dl == 落盘大小。 */
+        struct stat pre;
+        const long long off_before =
+            (resume[0] && stat(part, &pre) == 0 && pre.st_size > 0) ? (long long)pre.st_size : 0;
         snprintf(cmd, sizeof cmd,
                  "curl -sS --fail --location --connect-timeout 5 "
                  "--speed-limit 1024 --speed-time 20 --retry 2 --retry-delay 1 "
@@ -2247,9 +2252,9 @@ static int64_t do_curl_download(const char *url, const char *path) {
         }
         struct stat st;
         if (ec == 0 && http >= 200 && http <= 299 && dl > 0 &&
-            stat(part, &st) == 0 && (long long)st.st_size == dl) {
+            stat(part, &st) == 0 && (long long)st.st_size == off_before + dl) {
             if (rename(part, path) == 0) {
-                ret = dl;
+                ret = (long long)st.st_size;
                 break;
             }
         }
