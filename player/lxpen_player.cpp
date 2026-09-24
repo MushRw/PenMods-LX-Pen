@@ -554,10 +554,11 @@ private:
             const QJsonObject rdata = obj.value(QStringLiteral("data")).toObject();
             const qint64 gotSize = (qint64)rdata.value(QStringLiteral("size")).toDouble();
             const qint64 expectSize = expectedBytesFor(m_currentSong, m_quality);
-            /* 双保险：runner 已按 expected 校验过，这里再核一次大小 */
+            /* 双保险：runner 已按 expected 校验过，这里再核一次。
+             * 只拦"比声明小"（截断只会变小）；比声明大 = 音源给了更高音质，放行。 */
             bool ok = rpcOk && gotSize > 102400;
-            if (ok && expectSize > 0 && qAbs(gotSize - expectSize) > expectSize / 20) {
-                soLog("cache size mismatch got=" + QString::number(gotSize)
+            if (ok && expectSize > 0 && gotSize < expectSize - expectSize / 20) {
+                soLog("cache size too small got=" + QString::number(gotSize)
                       + " expect=" + QString::number(expectSize));
                 ok = false;
             }

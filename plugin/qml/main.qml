@@ -42,9 +42,12 @@ Rectangle {
     property var downloads: []
     property bool downloading: false
     property var scriptList: []
-    /* 内置默认音源：官方 v4 已过期（服务端提示"版本过低 v6"），换为 v6 修复版 */
-    property string defaultScript: "lx-music-source-v6.js"
-    property string selectedScript: "lx-music-source-v6.js"
+    /* 默认音源。注意：v6（lx-music-source-v6.js）解析 URL 要连它自己的服务器
+     * （88.lxmusic.中国），该服务器不通时取 URL 会失败甚至挂住 —— 2026-09-23 实测
+     * 从词典笔连不上（笔访问 kuwo/baidu 均正常），而 kxh / 星海 直连酷我 CDN 正常。
+     * 因此默认改用 kxh，v6 仍保留在列表里可手动选。 */
+    property string defaultScript: "kxh-1.7.17.js"
+    property string selectedScript: "kxh-1.7.17.js"
     /* 用户音源目录：放在文件管理器根目录下，可随时用笔上文件管理器替换，插件升级不覆盖 */
     property string userScriptDir: "/userdisk/Music/lx-sources"
     property var scriptSources: ({})
@@ -469,7 +472,16 @@ Rectangle {
         rpcSend({ cmd: "script", source: song.source || platform, action: "musicUrl", info: { type: q, musicInfo: song } }, function(res) {
             if (!res.ok) {
                 downloading = false
-                toast.show("获取链接失败", 3000)
+                /* 取链失败常见于音源脚本依赖的外部服务器不通（例如 v6 的 88.lxmusic.中国：
+                 * 从笔上连不通时取 URL 一直失败）。此时自动切回默认音源，让用户再点一次即可。 */
+                if (selectedScript !== defaultScript) {
+                    selectedScript = defaultScript
+                    saveSettings()
+                    restartRunner()
+                    toast.show("音源取链失败，已切换为 " + defaultScript + "，请再点一次", 3000)
+                } else {
+                    toast.show("获取链接失败", 3000)
+                }
                 return
             }
             var dir = "/userdisk/Music/LX-Pen"
@@ -484,7 +496,8 @@ Rectangle {
                 toast.show(attempt === 0 ? "下载中..." : "重试中...", 1500)
                 rpcSend({ cmd: "download", url: res.data, path: path, expected: expect }, function(res2) {
                     var ok = res2.ok && res2.data && res2.data.size >= 102400
-                    if (ok && expect > 0 && Math.abs(res2.data.size - expect) > expect * 0.05) ok = false
+                    /* 只拦"比声明小"：截断只会变小；比声明大说明音源给了更高音质（如 128k 给 FLAC），放行 */
+                    if (ok && expect > 0 && res2.data.size < expect * 0.95) ok = false
                     if (!ok && attempt < 1) {
                         shell.exec("rm -f '" + path + "' '" + path + ".part'")
                         tryDownload(1)

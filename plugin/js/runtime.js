@@ -71,14 +71,15 @@ async function handleDownload(req) {
   const path = String(req.path || '');
   if (!url || !path) throw new Error('empty url/path');
   /* C 层已保证"传输完整"才算成功（curl 退出码 0 + 2xx + size_download == 落盘大小）。
-   * expected（音源给的期望字节数）是第二道校验：对不上说明被截断或下到了别的东西，
-   * 抛错让调用方删文件重试，绝不能报"下载完成"。 */
+   * expected（音源给的期望字节数）只是兜底校验，且**只拦"比声明小"**：
+   * 传输被截断只会让文件变小；比声明大是正常的（音源可能给了更高音质，
+   * 例如要 128k 却给 FLAC —— kxh 就是这种），不能因此判失败。 */
   const expected = parseInt(req.expected, 10) || 0;
   const tol = req.tolerance ? Number(req.tolerance) : 0.05;
   const size = native.download(url, path);
   if (typeof size !== 'number' || size < 0) throw new Error('download failed');
-  if (expected > 0 && Math.abs(size - expected) > expected * tol) {
-    throw new Error('incomplete download ' + size + '/' + expected + ' bytes');
+  if (expected > 0 && size < expected * (1 - tol)) {
+    throw new Error('incomplete download: only ' + size + ' of ~' + expected + ' bytes');
   }
   return { path, size, expected: expected || size };
 }
