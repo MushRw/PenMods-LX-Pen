@@ -42,12 +42,14 @@ Rectangle {
     property var downloads: []
     property bool downloading: false
     property var scriptList: []
-    /* 默认音源。注意：v6（lx-music-source-v6.js）解析 URL 要连它自己的服务器
-     * （88.lxmusic.中国），该服务器不通时取 URL 会失败甚至挂住 —— 2026-09-23 实测
-     * 从词典笔连不上（笔访问 kuwo/baidu 均正常），而 kxh / 星海 直连酷我 CDN 正常。
-     * 因此默认改用 kxh，v6 仍保留在列表里可手动选。 */
-    property string defaultScript: "kxh-1.7.17.js"
-    property string selectedScript: "kxh-1.7.17.js"
+    /* 默认音源。实测（2026-09-24，请求 320k 同一首歌）：
+     *   星海   -> audio/mpeg 9.6MB   ✓ 正常
+     *   kxh    -> audio/x-flac 48.6MB，且文件尾部解码报错（源/CDN 的文件本身残缺）
+     *   v6     -> 取链失败（依赖自己的服务器 88.lxmusic.中国，从笔上连不通）
+     *   molan  -> 挂住无响应
+     * 所以默认用星海；kxh 保留在列表里（有些歌它给的 FLAC 是好的，但体积很大）。 */
+    property string defaultScript: "xinghai-2.3.11.js"
+    property string selectedScript: "xinghai-2.3.11.js"
     /* 用户音源目录：放在文件管理器根目录下，可随时用笔上文件管理器替换，插件升级不覆盖 */
     property string userScriptDir: "/userdisk/Music/lx-sources"
     property var scriptSources: ({})
@@ -506,7 +508,13 @@ Rectangle {
                     downloading = false
                     if (ok) {
                         addDownload({ name: song.name, singer: song.singer || "", path: path, size: res2.data.size, time: new Date().toISOString() })
-                        toast.show("下载完成", 2000)
+                        var mb = (res2.data.size / 1048576).toFixed(1)
+                        /* 音源可能"越级"给无损：体积远大于声明时提示一下，避免弱网/占空间踩坑 */
+                        if (expect > 0 && res2.data.size > expect * 2) {
+                            toast.show("下载完成 " + mb + "MB（音源给了无损，偏大）", 3500)
+                        } else {
+                            toast.show("下载完成 " + mb + "MB", 2000)
+                        }
                     } else {
                         shell.exec("rm -f '" + path + "' '" + path + ".part'")
                         toast.show(expect > 0 ? "下载不完整，已放弃" : "下载失败", 3000)
