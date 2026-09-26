@@ -258,6 +258,7 @@ public:
         m_queue = QJsonArray();
         m_index = -1;
         m_playStartedAt = 0;
+        m_initNextSwallowed = false; /* LX-03: 新会话重置误触发预算 */
         m_ourSeq = 0;
         m_advanceHandled = false;
         m_playAfterCache = false;
@@ -272,6 +273,7 @@ public:
         m_takeover = true;
         m_advanceHandled = false;
         m_playStartedAt = QDateTime::currentMSecsSinceEpoch();
+        m_initNextSwallowed = false; /* LX-03: 新会话重置误触发预算 */
         void* mpm = resolveTInstance(kYMediaPlayerManagerT);
         m_ourSeq = mpm ? currentAudioSeq(mpm) : 0;
         persistIndex();
@@ -288,6 +290,7 @@ public:
         persistIndex();
         /* 切换中：任何 onSoundEnd 一律忽略，直到新歌真正开播（finishPlay 重置） */
         m_playStartedAt = 0;
+        m_initNextSwallowed = false; /* LX-03: 新会话重置误触发预算 */
         m_advanceHandled = false;
         m_ourSeq = 0;
         m_playAfterCache = false;
@@ -332,6 +335,7 @@ public:
         m_queue = QJsonArray();
         m_index = -1;
         m_playStartedAt = 0;
+        m_initNextSwallowed = false; /* LX-03: 新会话重置误触发预算 */
         m_ourSeq = 0;
         m_advanceHandled = false;
         QFile::remove(QStringLiteral("/tmp/lxpen_state.json"));
@@ -401,6 +405,7 @@ public:
         m_queue = QJsonArray();
         m_index = -1;
         m_playStartedAt = 0;
+        m_initNextSwallowed = false; /* LX-03: 新会话重置误触发预算 */
         m_ourSeq = 0;
         m_advanceHandled = false;
         QFile::remove(QStringLiteral("/tmp/lxpen_state.json"));
@@ -408,12 +413,18 @@ public:
     }
 
     /* 手动/宿主"下一首"：经宿主播放器 onClickedNext 同一路径推进队列。
-     * 3 秒内视为宿主初始化误触发（实测误判约 0.8~1.9s），忽略以免连环跳歌。 */
+     * 开播 3 秒内的宿主初始化误触发（实测 0.8~1.9s）仍要拦，但只吞第一次：
+     * 此后的点击一律视为真实用户操作放行——原实现整窗全吞，
+     * 导致开播 3 秒内点下一曲完全无效（LX-03）。 */
     void handleNext() {
         if (m_queue.size() == 0) return;
         if (m_playStartedAt > 0 && QDateTime::currentMSecsSinceEpoch() - m_playStartedAt < 3000) {
-            soLog("next ignored (within 3s of play start)");
-            return;
+            if (!m_initNextSwallowed) {
+                m_initNextSwallowed = true;
+                soLog("next ignored (init misfire window)");
+                return;
+            }
+            soLog("next within 3s but misfire budget used -> honor click");
         }
         int next = m_index + 1;
         if (next >= m_queue.size()) next = 0;
@@ -618,6 +629,7 @@ private:
         m_waitResp = false;
         m_timer->stop();
         m_playStartedAt = QDateTime::currentMSecsSinceEpoch();
+        m_initNextSwallowed = false; /* LX-03: 新会话重置误触发预算 */
         m_advanceHandled = false;
         /* 宿主已确认开播：刷新会话号，确保"真结束"事件能被识别为本插件的会话 */
         void* mpm = resolveTInstance(kYMediaPlayerManagerT);
@@ -816,6 +828,7 @@ private:
     bool doPlay(const QString& src, const QString& title, const QString& lrcPath, bool isUrl) {
         /* 直接播放（playFile/playUrl）不经过 playIndex：复位计时，避免旧 sinceStart 误触发连播 */
         m_playStartedAt = 0;
+        m_initNextSwallowed = false; /* LX-03: 新会话重置误触发预算 */
         m_advanceHandled = false;
         /* 先持音频守护进程 MUSIC 锁，再触发播放（避免守护进程在播放开始后介入打断） */
         holdMusicLock();
@@ -894,6 +907,9 @@ private:
     QString m_respPath;
     int m_respId = 0;
     qint64 m_playStartedAt = 0;
+    /* LX-03：开播 3 秒内的"下一曲"误触发预算——只吞第一次（宿主初始化误触发，
+     * 实测 0.8~1.9s 且每次开播至多一次），第二次起视为真实用户点击放行。 */
+    bool m_initNextSwallowed = false;
     QTimer* m_cacheTimer = nullptr;
     bool m_cacheBusy = false;
     bool m_playAfterCache = false;
