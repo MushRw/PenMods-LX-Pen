@@ -1760,8 +1760,14 @@ static JSValue js_request_start(JSContext *ctx, JSValueConst this_val, int argc,
         C.easy_setopt(r->easy, CURLOPT_SSL_VERIFYPEER, 1L);
         C.easy_setopt(r->easy, CURLOPT_SSL_VERIFYHOST, 2L);
         C.easy_setopt(r->easy, CURLOPT_CAINFO, "/etc/ssl/certs/ca-certificates.crt");
+    } else if (access("/usr/share/grpc/roots.pem", R_OK) == 0) {
+        /* LX-11: 出厂固件 /etc/ssl/certs 为空，但 grpc 自带 roots.pem——
+         * 用它做真校验，而不是直接放弃校验。 */
+        C.easy_setopt(r->easy, CURLOPT_SSL_VERIFYPEER, 1L);
+        C.easy_setopt(r->easy, CURLOPT_SSL_VERIFYHOST, 2L);
+        C.easy_setopt(r->easy, CURLOPT_CAINFO, "/usr/share/grpc/roots.pem");
     } else {
-        /* 笔上无 CA bundle 时放宽校验（设备端场景） */
+        /* 连 roots.pem 都没有：放宽校验（设备端场景，与下载路径策略一致） */
         C.easy_setopt(r->easy, CURLOPT_SSL_VERIFYPEER, 0L);
         C.easy_setopt(r->easy, CURLOPT_SSL_VERIFYHOST, 0L);
     }
@@ -2211,6 +2217,21 @@ static int64_t do_curl_download(const char *url, const char *path) {
 
     const char *resume = "-C - ";
     int64_t ret = -1;
+
+    /* LX-11: 设备出厂 /etc/ssl/certs 为空，系统 curl 的 TLS 校验必败——
+     * request() 路径（libcurl）有无 CA 就放宽的兜底，下载路径此前没有，
+     * 导致「http 请求全部正常、https 音频下载全军覆没」。
+     * 探测一次：系统 bundle → 出厂 grpc roots.pem → 都没有才放宽校验。 */
+    static const char *ca_arg = NULL;
+    if (!ca_arg) {
+        if (access("/etc/ssl/certs/ca-certificates.crt", R_OK) == 0)
+            ca_arg = "";
+        else if (access("/usr/share/grpc/roots.pem", R_OK) == 0)
+            ca_arg = " --cacert /usr/share/grpc/roots.pem";
+        else
+            ca_arg = " -k";
+    }
+
     for (int attempt = 0; attempt < 2; attempt++) {
         Dstr u, p;
         dstr_init(&u);
@@ -2232,9 +2253,9 @@ static int64_t do_curl_download(const char *url, const char *path) {
         snprintf(cmd, sizeof cmd,
                  "curl -sS --fail --location --connect-timeout 5 "
                  "--speed-limit 1024 --speed-time 20 --retry 2 --retry-delay 1 "
-                 "%s-m 300 -o '%s' -w '%%{http_code} %%{size_download}' '%s' "
+                 "%s-m 300 -o '%s' -w '%%{http_code} %%{size_download}' '%s'%s "
                  "> /tmp/lxpen_curl_code 2>/dev/null; echo \" $?\" >> /tmp/lxpen_curl_code",
-                 resume, p.buf ? p.buf : "", u.buf ? u.buf : "");
+                 resume, p.buf ? p.buf : "", u.buf ? u.buf : "", ca_arg);
         dstr_free(&u);
         dstr_free(&p);
         (void)system(cmd);
