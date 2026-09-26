@@ -931,6 +931,10 @@ private:
 };
 
 static LxPenPlayer* g_player = nullptr;
+/* PL-06: 记住 attach_engine 传进来的引擎指针。destroy_plugin 时必须把
+ * "lxpenPlayer" 上下文属性置空再 delete g_player —— rootContext 持有裸指针，
+ * 插件 .so 卸载后 QML 一读就是 use-after-free。 */
+static void* g_qml_engine = nullptr;
 static OnSoundEndFn g_origOnSoundEnd = nullptr;
 static void* (*g_origOnClickedNext)(void*, bool) = nullptr;
 static void* (*g_origOnClickedPrev)(void*, bool) = nullptr;
@@ -991,12 +995,24 @@ void init_plugin_with_hook_api(PluginHookAPI* api) {
 
 void attach_engine(void* engine) {
     QQmlEngine* qmlEngine = reinterpret_cast<QQmlEngine*>(engine);
+    g_qml_engine = engine;
     if (qmlEngine && g_player) {
         qmlEngine->rootContext()->setContextProperty(QStringLiteral("lxpenPlayer"), g_player);
     }
 }
 
 void destroy_plugin() {
+    /* PL-06: 先把上下文属性置空，再 delete g_player。
+     * 顺序不能反：delete 之后 rootContext 里挂的就是已析构指针，
+     * 禁用插件期间任何 QML 读到 lxpenPlayer 都会崩。置空后 QML 读到 null，
+     * 最多报 TypeError，不会 SIGSEGV。
+     * 用 attach_engine 存下的引擎指针，不依赖宿主 SDK 版本（老宿主没有
+     * removeContextProperty 这个 API 字段，自己存指针在哪个宿主上都能跑）。 */
+    if (g_qml_engine) {
+        static_cast<QQmlEngine*>(g_qml_engine)->rootContext()->setContextProperty(
+            QStringLiteral("lxpenPlayer"), static_cast<QObject*>(nullptr));
+        g_qml_engine = nullptr;
+    }
     if (g_player) {
         /* 页面销毁时若宿主已停止播放：回收 runner 并释放 MUSIC 锁；
          * 宿主仍在播放则保留（后台续播需要 runner 解析后续链接）。 */
